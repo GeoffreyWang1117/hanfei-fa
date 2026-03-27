@@ -1,0 +1,6 @@
+hanfei-fa 法
+Copyright 2026 Geoffrey Wang
+
+Part of the HanFei (韩非) verifiable AI series:
+  - hanfei-shu 术 — GPU-accelerated MSM for zero-knowledge proofs
+  - hanfei-fa  法 — ML model weight integrity verification (this project)
