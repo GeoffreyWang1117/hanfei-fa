@@ -43,6 +43,16 @@ Specification: `docs/MANIFEST_V2.md`.
   measurements on real models.
 - `tests/reference_v2.py`: an independent implementation of the specification
   that generates `tests/vectors/format_v2.json`.
+- `merkle_verify.repair` / `merkle-verify repair`: re-fetch only the damaged
+  chunks of a file or model directory from a local copy, an HTTP(S) URL with
+  Range support, or `hf://org/name@rev`. Every fetched chunk is checked
+  against the trusted manifest before it is written; damaged headers and
+  truncated files are repaired; the result must reproduce the manifest root.
+- `merkle-verify hf-check`: verify a cached HF model against a manifest
+  published in the repository, a given manifest, or a trusted root, and print
+  the repair command on failure.
+- `docs/SIGNING.md`: signing manifests with Sigstore model signing (tested
+  with model-signing 1.1.1) or cosign, and pinning roots.
 
 ## [0.2.1] - 2026-10-18
 

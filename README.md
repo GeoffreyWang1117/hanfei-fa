@@ -14,6 +14,8 @@ whole model, and a tensor- and chunk-level diff when it does not match.
 - **"How much do I need to re-download?"** Estimate incremental-sync size from the diff.
 - **"Prove this one tensor is part of that model."** Inclusion proofs for a
   single tensor or a single chunk against the model root.
+- **"Fix my corrupted download without fetching 70 GB again."** Re-fetch only
+  the damaged chunks from any mirror, checking each one before it is written.
 
 The core library uses only the Python standard library. Safetensors files
 (single-file or sharded) are read by a built-in parser, so they need no extra
@@ -51,6 +53,13 @@ merkle-verify diff base.safetensors finetuned.safetensors
 # Hash a model already in the HuggingFace cache (nothing is written to the cache)
 merkle-verify hf-sign Qwen/Qwen2.5-0.5B --revision main -o qwen.merkle.json
 
+# Check a cached HF model against a manifest published with it, or a trusted root
+merkle-verify hf-check org/model --expected-root sha256:9f2c...
+
+# Repair: re-fetch only damaged chunks, from a local copy, a URL, or the HF Hub
+merkle-verify repair ./Llama-3.1-8B/ --from hf://meta-llama/Llama-3.1-8B@<commit>
+merkle-verify repair model.safetensors --from /mnt/backup/model.safetensors --dry-run
+
 # Options: hash algorithm, compact manifests, the 0.2.x format
 merkle-verify --algorithm blake3 sign model.safetensors
 merkle-verify sign --compact model.safetensors      # no per-chunk hashes: small manifest
@@ -61,7 +70,8 @@ merkle-verify info model.merkle.json                # format, algorithm, root, c
 `verify` always uses the format, algorithm and chunk size recorded in the
 manifest. A trusted root can carry its algorithm: `--expected-root sha512:9f2c...`.
 
-Exit codes: `0` verified, `1` verification failed, `2` error (bad input, missing file).
+Exit codes: `0` verified (or repaired and verified), `1` verification or repair failed,
+`2` error (bad input, missing file).
 
 ## Python API
 
@@ -127,6 +137,23 @@ changed_indices, comparisons = tree.diff_tree(other_tree)
 model = build_model_merkle_tree({"w": RawTensor(raw, "BF16", (4096, 4096))})
 ```
 
+### Repair
+
+```python
+from merkle_verify.repair import repair
+
+report = repair("model.safetensors", "hf://org/model@<commit>")   # sidecar manifest by default
+print(report.summary())   # e.g. 5/33522 chunks damaged; fetched 68608 bytes (0.01% of 548105171) in 5 request(s)
+assert report.verified    # the repaired file reproduces the manifest root
+```
+
+Only the manifest has to be trusted. A chunk from the source is written only if
+it hashes to the manifest's leaf, so a damaged or malicious mirror cannot make
+things worse. Adjacent chunks are merged into one Range request and requests
+run concurrently. A damaged safetensors header is re-fetched and checked
+against the manifest's tensor list; a truncated file is completed. With a
+`--compact` manifest a damaged tensor is re-fetched whole.
+
 ### Sync estimate
 
 ```python
@@ -150,7 +177,10 @@ through a channel the attacker does not control (`expected_root=` /
 [Sigstore model signing](https://github.com/sigstore/model-transparency).
 Verification always re-hashes the weights; a root read from a manifest is
 never trusted on its own, and a manifest whose stored roots disagree with its
-own contents is rejected.
+own contents is rejected. [docs/SIGNING.md](docs/SIGNING.md) shows how to
+sign a manifest with Sigstore and verify it before trusting it. A manifest
+published in the same HF repository as the weights detects corrupted
+downloads, not a compromised repository.
 
 **What a root commits to (format v2, the default since 0.3).** Every tensor's
 name, dtype, shape and bytes, the chunk size, and the number of tensors. Trees
@@ -198,9 +228,8 @@ match it for every algorithm.
 ## Roadmap
 
 - **0.3: manifest format v2** (this release). See [CHANGELOG.md](CHANGELOG.md).
-- **0.4: ecosystem.** `hf-check` against manifests published with a model,
-  chunk-level repair from a healthy replica, a Sigstore signing guide, and the
-  v2 format in the Rust port.
+- **Next:** chunk-level repair, `hf-check` and the signing guide (in review);
+  the v2 format in the Rust port (in review).
 - Later: property-based tests, typed API.
 
 ## License
