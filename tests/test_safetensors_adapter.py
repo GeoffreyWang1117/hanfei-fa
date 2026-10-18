@@ -95,7 +95,7 @@ class TestVerify:
         tree = sign(signed_file, sidecar=False)
         is_valid, details = verify(signed_file, expected_root=tree.model_root)
         assert is_valid is True
-        assert details["mode"] == "root_only"
+        assert details["mode"] == "expected_root"
 
     def test_verify_wrong_root(self, signed_file):
         is_valid, details = verify(signed_file, expected_root="0" * 64)

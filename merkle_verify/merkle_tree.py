@@ -4,13 +4,14 @@ Merkle Tree implementation for model weights
 
 from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass, field
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 import os
 
 from merkle_verify.hasher import compute_hash, hash_pair
 from merkle_verify.chunking import chunk_bytes, DEFAULT_CHUNK_SIZE
+from merkle_verify._tensor_bytes import to_bytes
 
 # Default number of workers for parallel processing
 DEFAULT_NUM_WORKERS = min(4, os.cpu_count() or 1)
@@ -653,9 +654,19 @@ def _extract_layer_name(param_name: str) -> str:
     return parts[0] if parts else "other"
 
 
+def _hash_chunks(data: bytes, chunk_size: int) -> List[str]:
+    """Hash ``data`` in fixed-size chunks.
+
+    Zero-length data (e.g. a tensor with a 0-sized dimension) is treated as a
+    single empty chunk so that every parameter has a well-defined root.
+    """
+    hashes = [compute_hash(chunk) for chunk in chunk_bytes(data, chunk_size)]
+    return hashes or [compute_hash(b"")]
+
+
 def _build_param_tree(
     param_name: str,
-    data: bytes,
+    data: Any,
     chunk_size: int
 ) -> Tuple[str, MerkleTree]:
     """
@@ -663,33 +674,68 @@ def _build_param_tree(
 
     Args:
         param_name: Name / key for this blob
-        data: Raw bytes to hash
+        data: Raw bytes, a torch.Tensor or a numpy array
         chunk_size: Chunk size in bytes
 
     Returns:
         Tuple of (param_name, MerkleTree)
     """
-    chunks = chunk_bytes(data, chunk_size)
-    chunk_hashes = [compute_hash(chunk) for chunk in chunks]
-    param_tree = MerkleTree(chunk_hashes, chunk_size)
-    return param_name, param_tree
+    raw = to_bytes(data)
+    return param_name, MerkleTree(_hash_chunks(raw, chunk_size), chunk_size)
+
+
+def assemble_model_tree(
+    param_trees: Dict[str, MerkleTree],
+    model_name: str = "",
+) -> ModelMerkleTree:
+    """
+    Group already-built parameter trees into layers and compute all roots.
+
+    This is the step shared by every builder (in-memory blobs, streamed
+    safetensors files, sharded checkpoints).
+
+    Args:
+        param_trees: Dict mapping parameter name to its chunk-level MerkleTree
+        model_name: Name of model
+
+    Returns:
+        ModelMerkleTree with layer and model roots computed
+    """
+    if not param_trees:
+        raise ValueError("No layer trees in model: no parameters given")
+
+    model_tree = ModelMerkleTree(model_name=model_name)
+    for param_name in sorted(param_trees):
+        layer_name = _extract_layer_name(param_name)
+        layer_tree = model_tree.layer_trees.get(layer_name)
+        if layer_tree is None:
+            layer_tree = LayerMerkleTree(layer_name=layer_name)
+            model_tree.layer_trees[layer_name] = layer_tree
+        layer_tree.param_trees[param_name] = param_trees[param_name]
+
+    for layer_tree in model_tree.layer_trees.values():
+        layer_tree.compute_layer_root()
+    model_tree.compute_model_root()
+    return model_tree
 
 
 def build_model_merkle_tree(
-    blobs: Dict[str, bytes],
+    blobs: Dict[str, Any],
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     model_name: str = "",
     num_workers: Optional[int] = None,
     parallel: bool = True,
 ) -> ModelMerkleTree:
     """
-    Build complete Merkle tree from a dict of named byte blobs.
+    Build complete Merkle tree from a dict of named blobs.
 
-    Works with any dict mapping names to bytes -- for PyTorch models,
-    serialize tensors first (e.g. ``{k: v.numpy().tobytes() for k, v in state_dict.items()}``).
+    Values may be raw ``bytes``, ``torch.Tensor`` objects (any dtype,
+    including bfloat16) or numpy arrays, so a PyTorch ``state_dict()`` can be
+    passed directly. Tensors are hashed as their contiguous little-endian
+    bytes, which is exactly what safetensors stores on disk.
 
     Args:
-        blobs: Dict mapping parameter/file name to raw bytes
+        blobs: Dict mapping parameter/file name to bytes or a tensor
         chunk_size: Size of chunks in bytes
         model_name: Name of model
         num_workers: Number of parallel workers (default: auto)
@@ -698,45 +744,22 @@ def build_model_merkle_tree(
     Returns:
         ModelMerkleTree
     """
-    model_tree = ModelMerkleTree(model_name=model_name)
-
-    # Group by layer using generic layer extraction
-    layer_params: Dict[str, Dict[str, bytes]] = {}
-    for param_name, data in blobs.items():
-        layer_name = _extract_layer_name(param_name)
-        if layer_name not in layer_params:
-            layer_params[layer_name] = {}
-        layer_params[layer_name][param_name] = data
-
     if num_workers is None:
         num_workers = DEFAULT_NUM_WORKERS
 
     if parallel and num_workers > 1 and len(blobs) > 4:
-        for layer_name, params in layer_params.items():
-            layer_tree = LayerMerkleTree(layer_name=layer_name)
-            with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                futures = {
-                    executor.submit(_build_param_tree, name, data, chunk_size): name
-                    for name, data in params.items()
-                }
-                for future in as_completed(futures):
-                    name, param_tree = future.result()
-                    layer_tree.param_trees[name] = param_tree
-            layer_tree.compute_layer_root()
-            model_tree.layer_trees[layer_name] = layer_tree
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = [
+                executor.submit(_build_param_tree, name, data, chunk_size)
+                for name, data in blobs.items()
+            ]
+            param_trees = dict(f.result() for f in futures)
     else:
-        for layer_name, params in layer_params.items():
-            layer_tree = LayerMerkleTree(layer_name=layer_name)
-            for param_name, data in params.items():
-                chunks = chunk_bytes(data, chunk_size)
-                chunk_hashes = [compute_hash(chunk) for chunk in chunks]
-                param_tree = MerkleTree(chunk_hashes, chunk_size)
-                layer_tree.param_trees[param_name] = param_tree
-            layer_tree.compute_layer_root()
-            model_tree.layer_trees[layer_name] = layer_tree
+        param_trees = dict(
+            _build_param_tree(name, data, chunk_size) for name, data in blobs.items()
+        )
 
-    model_tree.compute_model_root()
-    return model_tree
+    return assemble_model_tree(param_trees, model_name=model_name)
 
 
 def build_file_merkle_tree(

@@ -248,7 +248,7 @@ class TestScenario03_EdgeServerVerification:
             base_safetensors, expected_root=golden_root
         )
         assert is_valid is True
-        assert details["mode"] == "root_only"
+        assert details["mode"] == "expected_root"
 
     def test_load_with_verify(self, base_checkpoint):
         sd, details = merkle_load(base_checkpoint)

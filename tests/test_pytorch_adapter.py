@@ -133,7 +133,7 @@ class TestVerifyCheckpoint:
             saved_checkpoint, expected_root=tree.model_root
         )
         assert is_valid is True
-        assert details["mode"] == "root_only"
+        assert details["mode"] == "expected_root"
 
     def test_verify_wrong_root(self, saved_checkpoint):
         is_valid, _ = verify_checkpoint(saved_checkpoint, expected_root="0" * 64)

@@ -6,7 +6,7 @@ Uses tree-walk diff and layer pruning for O(k * log C) performance
 instead of linear scanning all chunks.
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 
 from merkle_verify.merkle_tree import ModelMerkleTree
@@ -235,3 +235,52 @@ def estimate_sync_savings(
         'savings_bytes': savings_bytes,
         'savings_percentage': savings_percentage,
     }
+
+
+def check_roots(
+    current_tree: ModelMerkleTree,
+    stored_tree: Optional[ModelMerkleTree] = None,
+    expected_root: Optional[str] = None,
+) -> Tuple[bool, Dict[str, Any]]:
+    """
+    Decide whether freshly computed weights are the expected ones.
+
+    ``current_tree`` must have been computed from the weights just now; a root
+    read from a manifest proves nothing about the file next to it.
+
+    * With ``expected_root`` (a trusted root obtained out of band) the verdict
+      is ``current_tree.model_root == expected_root``. ``stored_tree`` is then
+      only used to localise differences and to flag a manifest that disagrees
+      with the trusted root.
+    * Without it, the verdict is ``current_tree.model_root == stored_tree.model_root``.
+
+    Returns:
+        (is_valid, details) where details has ``mode`` ("expected_root" or
+        "full"), ``computed_root``, ``root_match`` and, on mismatch with a
+        manifest available, ``changed_layers`` / ``changed_params`` /
+        ``change_percentage``.
+    """
+    if expected_root is None and stored_tree is None:
+        raise ValueError("need a stored manifest or an expected_root to verify against")
+
+    details: Dict[str, Any] = {"computed_root": current_tree.model_root}
+    if expected_root is not None:
+        is_valid = current_tree.model_root == expected_root
+        details["mode"] = "expected_root"
+        details["expected_root"] = expected_root
+        if stored_tree is not None:
+            details["stored_root"] = stored_tree.model_root
+            if stored_tree.model_root != expected_root:
+                details["manifest_mismatch"] = True
+    else:
+        is_valid = current_tree.model_root == stored_tree.model_root
+        details["mode"] = "full"
+        details["stored_root"] = stored_tree.model_root
+    details["root_match"] = is_valid
+
+    if not is_valid and stored_tree is not None:
+        result = compare_model_trees(current_tree, stored_tree, detailed=True)
+        details["changed_layers"] = result["changed_layers"]
+        details["changed_params"] = result["changed_params"]
+        details["change_percentage"] = result["change_percentage"]
+    return is_valid, details

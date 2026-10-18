@@ -8,8 +8,8 @@ import copy
 import time
 
 import pytest
-import torch
-import torchvision.models as models
+torch = pytest.importorskip("torch", reason="PyTorch not installed")
+models = pytest.importorskip("torchvision.models", reason="torchvision not installed")
 
 from merkle_verify.merkle_tree import build_model_merkle_tree, ModelMerkleTree
 from merkle_verify.comparison import compare_model_trees, estimate_sync_savings

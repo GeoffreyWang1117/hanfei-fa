@@ -11,6 +11,7 @@ from merkle_verify.merkle_tree import (
     ModelMerkleTree,
     build_model_merkle_tree,
     build_file_merkle_tree,
+    assemble_model_tree,
 )
 from merkle_verify.hasher import (
     compute_hash,
@@ -25,6 +26,7 @@ from merkle_verify.chunking import chunk_bytes, chunk_tensor
 from merkle_verify.comparison import (
     compare_model_trees,
     estimate_sync_savings,
+    check_roots,
     ComparisonResult,
 )
 from merkle_verify.strategies import (
@@ -34,10 +36,10 @@ from merkle_verify.strategies import (
     TheoreticalOptimalStrategy,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
-# Optional integrations (imported on demand, not at top level)
-# - merkle_verify.safetensors_adapter: pip install merkle-weight-verify[safetensors]
+# Integrations (imported on demand, not at top level)
+# - merkle_verify.safetensors_adapter: no extra dependency (built-in format reader)
 # - merkle_verify.pytorch_adapter: pip install merkle-weight-verify[torch]
 
 __all__ = [
@@ -61,4 +63,6 @@ __all__ = [
     "AdaptiveChunkStrategy",
     "TheoreticalOptimalStrategy",
     "build_file_merkle_tree",
+    "assemble_model_tree",
+    "check_roots",
 ]

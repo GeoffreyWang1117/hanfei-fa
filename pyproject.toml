@@ -4,19 +4,32 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "merkle-weight-verify"
-version = "0.2.0"
-description = "ML model weight verification via hierarchical Merkle trees — O(1) integrity check, layer-aware diff, incremental sync. The missing verification layer for safetensors, PyTorch, and HuggingFace Hub."
+version = "0.2.1"
+description = "Verify ML model weights with hierarchical Merkle trees: one root for the whole model, tensor- and chunk-level diffs, zero-dependency safetensors support."
 authors = [{name = "Geoffrey Wang", email = "geoffreywang1117@gmail.com"}]
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.8"
-keywords = ["merkle-tree", "integrity", "verification", "model-weights", "hashing", "provenance"]
+keywords = [
+    "merkle-tree", "integrity", "verification", "model-weights",
+    "hashing", "safetensors", "huggingface", "pytorch", "provenance",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Security :: Cryptography",
     "Topic :: Software Development :: Libraries",
 ]
@@ -26,14 +39,22 @@ merkle-verify = "merkle_verify.cli:main"
 
 [project.optional-dependencies]
 fast = ["blake3>=1.0.0"]
-safetensors = ["safetensors>=0.4.0"]
 torch = ["torch>=2.0.0"]
+# Kept for compatibility with 0.2.0 install commands; the safetensors adapter
+# no longer needs these packages.
+safetensors = ["safetensors>=0.4.0"]
 huggingface = ["safetensors>=0.4.0", "huggingface_hub>=0.20.0"]
 all = ["blake3>=1.0.0", "safetensors>=0.4.0", "torch>=2.0.0", "huggingface_hub>=0.20.0"]
+test = ["pytest>=7.0"]
 
 [project.urls]
-Homepage = "https://github.com/GeoffreyWang1117/merkle-weight-verify"
-Issues = "https://github.com/GeoffreyWang1117/merkle-weight-verify/issues"
+Homepage = "https://github.com/GeoffreyWang1117/hanfei-fa"
+Source = "https://github.com/GeoffreyWang1117/hanfei-fa"
+Issues = "https://github.com/GeoffreyWang1117/hanfei-fa/issues"
+Changelog = "https://github.com/GeoffreyWang1117/hanfei-fa/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["merkle_verify*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
