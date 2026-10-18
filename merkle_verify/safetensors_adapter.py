@@ -28,9 +28,11 @@ from merkle_verify._safetensors_io import (
     read_header,
     read_tensor_bytes,
 )
+from merkle_verify import format as fmt
 from merkle_verify.chunking import DEFAULT_CHUNK_SIZE
-from merkle_verify.comparison import check_roots, compare_model_trees
-from merkle_verify.hasher import compute_hash
+from merkle_verify.comparison import check_roots, compare_model_trees, plan_rehash
+from merkle_verify.format import DEFAULT_FORMAT_VERSION, FORMAT_V1
+from merkle_verify.hasher import compute_hash, resolve_algorithm
 from merkle_verify.merkle_tree import (
     DEFAULT_NUM_WORKERS,
     MerkleTree,
@@ -67,13 +69,27 @@ def _sidecar_path(filepath: str) -> str:
     return str(Path(filepath).with_suffix(".merkle.json"))
 
 
-def _tensor_tree(filepath: str, info: TensorInfo, chunk_size: int) -> MerkleTree:
+def _tensor_tree(
+    filepath: str,
+    info: TensorInfo,
+    chunk_size: int,
+    format_version: int = DEFAULT_FORMAT_VERSION,
+    algorithm=None,
+) -> MerkleTree:
     """Build one tensor's chunk tree by streaming its byte range."""
+    alg = resolve_algorithm(algorithm)
+    if format_version == FORMAT_V1:
+        leaf = lambda c: compute_hash(c, alg)  # noqa: E731
+    else:
+        leaf = lambda c: fmt.hash_leaf(c, alg)  # noqa: E731
     with open(filepath, "rb") as f:
-        hashes = [compute_hash(c) for c in iter_tensor_chunks(f, info, chunk_size)]
+        hashes = [leaf(c) for c in iter_tensor_chunks(f, info, chunk_size)]
     if not hashes:
-        hashes = [compute_hash(b"")]
-    return MerkleTree(hashes, chunk_size)
+        hashes = [leaf(b"")]
+    return MerkleTree(
+        hashes, chunk_size, version=format_version, algorithm=alg,
+        num_bytes=info.nbytes, dtype=info.dtype, shape=info.shape,
+    )
 
 
 def _collect_tensors(files: Iterable[str]) -> List[Tuple[str, TensorInfo]]:
@@ -98,15 +114,19 @@ def _build_tree_from_files(
     model_name: str,
     parallel: bool,
     num_workers: Optional[int] = None,
+    format_version: int = DEFAULT_FORMAT_VERSION,
+    algorithm=None,
 ) -> ModelMerkleTree:
     """Stream every tensor of the given safetensors files into one model tree."""
     entries = _collect_tensors(files)
     if num_workers is None:
         num_workers = DEFAULT_NUM_WORKERS
+    fmt.check_format_version(format_version)
+    alg = resolve_algorithm(algorithm)
 
     def build(entry: Tuple[str, TensorInfo]) -> Tuple[str, MerkleTree]:
         path, info = entry
-        return info.name, _tensor_tree(path, info, chunk_size)
+        return info.name, _tensor_tree(path, info, chunk_size, format_version, alg)
 
     if parallel and num_workers > 1 and len(entries) > 1:
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
@@ -125,29 +145,19 @@ def _infer_chunk_size(tree: ModelMerkleTree) -> int:
     return DEFAULT_CHUNK_SIZE
 
 
-def _resolve_chunk_size(
-    chunk_size: Optional[int],
-    stored_tree: Optional[ModelMerkleTree],
-    expected_root: Optional[str],
-) -> int:
-    """Pick the chunk size to re-hash with.
-
-    Comparing against a manifest only makes sense with the manifest's own chunk
-    size; a different one would report every tensor as changed.
-    """
-    manifest_cs = _infer_chunk_size(stored_tree) if stored_tree is not None else None
-    if chunk_size is None:
-        return manifest_cs or DEFAULT_CHUNK_SIZE
-    if expected_root is None and manifest_cs is not None and chunk_size != manifest_cs:
-        raise ValueError(
-            f"chunk_size {chunk_size} differs from the manifest's chunk size {manifest_cs}"
-        )
-    return chunk_size
-
-
 # ---------------------------------------------------------------------------
 # Shared verification logic
 # ---------------------------------------------------------------------------
+
+def _load_manifest(manifest: str):
+    """Returns (tree or None, error or None). A missing file is not an error here."""
+    try:
+        return ModelMerkleTree.from_json(manifest), None
+    except FileNotFoundError:
+        return None, None
+    except (ValueError, KeyError, TypeError) as e:
+        return None, f"invalid manifest {manifest}: {e}"
+
 
 def _verify_against(
     build_current,
@@ -155,24 +165,32 @@ def _verify_against(
     expected_root: Optional[str],
     chunk_size: Optional[int],
     details: Dict[str, Any],
+    format_version: Optional[int] = None,
+    algorithm=None,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Re-hash the weights and compare with a manifest and/or an expected root.
 
-    ``build_current(chunk_size, model_name)`` must return a freshly computed
-    ModelMerkleTree. The weights are always re-hashed.
+    ``build_current(plan, model_name)`` must return a freshly computed
+    ModelMerkleTree using ``plan``'s format, algorithm and chunk size.
+    The weights are always re-hashed.
     """
-    try:
-        stored_tree: Optional[ModelMerkleTree] = ModelMerkleTree.from_json(manifest)
-    except FileNotFoundError:
-        stored_tree = None
-        if expected_root is None:
-            return False, {**details, "error": f"Manifest not found: {manifest}"}
+    stored_tree, error = _load_manifest(manifest)
+    if error is not None and expected_root is None:
+        return False, {**details, "error": error}
+    if stored_tree is None and expected_root is None:
+        return False, {**details, "error": f"Manifest not found: {manifest}"}
 
-    chunk_size = _resolve_chunk_size(chunk_size, stored_tree, expected_root)
+    plan = plan_rehash(stored_tree, expected_root, format_version, algorithm, chunk_size)
     name = stored_tree.model_name if stored_tree else ""
-    current_tree = build_current(chunk_size, name)
-    is_valid, result = check_roots(current_tree, stored_tree, expected_root)
+    current_tree = build_current(plan, name)
+    is_valid, result = check_roots(current_tree, plan.stored, expected_root)
     details.update(result)
+    details["format_version"] = plan.format_version
+    details["algorithm"] = plan.algorithm.value
+    if plan.note:
+        details["manifest_ignored"] = plan.note
+    if error is not None:
+        details["manifest_ignored"] = error
     return is_valid, details
 
 
@@ -185,11 +203,15 @@ def build_tree(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     model_name: Optional[str] = None,
     parallel: bool = True,
+    *,
+    format_version: int = DEFAULT_FORMAT_VERSION,
+    algorithm=None,
 ) -> ModelMerkleTree:
     """Build a Merkle tree for a safetensors file without writing anything."""
     if model_name is None:
         model_name = Path(filepath).stem
-    return _build_tree_from_files([filepath], chunk_size, model_name, parallel)
+    return _build_tree_from_files([filepath], chunk_size, model_name, parallel,
+                                  format_version=format_version, algorithm=algorithm)
 
 
 def sign(
@@ -198,6 +220,10 @@ def sign(
     model_name: Optional[str] = None,
     sidecar: bool = True,
     parallel: bool = True,
+    *,
+    format_version: int = DEFAULT_FORMAT_VERSION,
+    algorithm=None,
+    include_chunks: bool = True,
 ) -> ModelMerkleTree:
     """
     Build a Merkle tree for a safetensors file and store the manifest.
@@ -210,13 +236,17 @@ def sign(
         model_name: Model name (default: filename stem)
         sidecar: If True, write .merkle.json sidecar file.
         parallel: Use parallel hashing
+        format_version: Manifest format, 2 (default) or 1
+        algorithm: Hash algorithm (default: SHA-256)
+        include_chunks: False writes a compact v2 manifest without chunk hashes
 
     Returns:
         The constructed ModelMerkleTree
     """
-    tree = build_tree(filepath, chunk_size=chunk_size, model_name=model_name, parallel=parallel)
+    tree = build_tree(filepath, chunk_size=chunk_size, model_name=model_name, parallel=parallel,
+                      format_version=format_version, algorithm=algorithm)
     if sidecar:
-        tree.to_json(_sidecar_path(filepath))
+        tree.to_json(_sidecar_path(filepath), include_chunks=include_chunks)
     return tree
 
 
@@ -226,6 +256,9 @@ def verify(
     expected_root: Optional[str] = None,
     parallel: bool = True,
     chunk_size: Optional[int] = None,
+    *,
+    format_version: Optional[int] = None,
+    algorithm=None,
 ) -> Tuple[bool, Dict[str, Any]]:
     """
     Verify a safetensors file.
@@ -240,9 +273,12 @@ def verify(
     Args:
         filepath: Path to .safetensors file
         manifest: Path to .merkle.json manifest (default: auto-detect sidecar)
-        expected_root: Trusted model root obtained out of band
+        expected_root: Trusted model root obtained out of band, optionally
+            prefixed with its algorithm (``"sha256:..."``)
         parallel: Use parallel hashing
-        chunk_size: Chunk size override (default: from manifest, else 16KB)
+        chunk_size: Chunk size (default: from manifest, else 16KB)
+        format_version, algorithm: Only needed with ``expected_root`` and no
+            manifest (default: format 2, SHA-256 or the root's prefix)
 
     Returns:
         Tuple of (is_valid, details_dict)
@@ -250,11 +286,14 @@ def verify(
     if manifest is None:
         manifest = _sidecar_path(filepath)
 
-    def build_current(cs: int, name: str) -> ModelMerkleTree:
-        return build_tree(filepath, chunk_size=cs, model_name=name, parallel=parallel)
+    def build_current(plan, name: str) -> ModelMerkleTree:
+        return build_tree(filepath, chunk_size=plan.chunk_size, model_name=name,
+                          parallel=parallel, format_version=plan.format_version,
+                          algorithm=plan.algorithm)
 
     return _verify_against(
-        build_current, manifest, expected_root, chunk_size, {"filepath": filepath}
+        build_current, manifest, expected_root, chunk_size, {"filepath": filepath},
+        format_version=format_version, algorithm=algorithm,
     )
 
 
@@ -292,15 +331,17 @@ def verify_tensor(
     if tensor_name not in tensors:
         return False, {"error": f"Tensor '{tensor_name}' not found in file"}
 
-    current = _tensor_tree(filepath, tensors[tensor_name], stored_param_tree.chunk_size)
-    match = current.root_hash == stored_param_tree.root_hash
+    current = _tensor_tree(filepath, tensors[tensor_name], stored_param_tree.chunk_size,
+                           stored_param_tree.version, stored_param_tree.algorithm)
+    stored_root = stored_param_tree.tensor_root(tensor_name)
+    computed_root = current.tensor_root(tensor_name)
     details = {
         "tensor_name": tensor_name,
-        "stored_root": stored_param_tree.root_hash,
-        "computed_root": current.root_hash,
+        "stored_root": stored_root,
+        "computed_root": computed_root,
         "num_chunks": current.num_chunks,
     }
-    return match, details
+    return computed_root == stored_root, details
 
 
 def diff(
@@ -308,6 +349,9 @@ def diff(
     filepath_b: str,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     parallel: bool = True,
+    *,
+    format_version: int = DEFAULT_FORMAT_VERSION,
+    algorithm=None,
 ) -> Dict[str, Any]:
     """
     Compare two safetensors files and return a detailed diff.
@@ -317,12 +361,15 @@ def diff(
         filepath_b: Path to second .safetensors file
         chunk_size: Chunk size for tree construction
         parallel: Use parallel hashing
+        format_version, algorithm: Hash format used for both trees
 
     Returns:
         Comparison dict with layer/param/chunk-level changes
     """
-    tree_a = build_tree(filepath_a, chunk_size=chunk_size, parallel=parallel)
-    tree_b = build_tree(filepath_b, chunk_size=chunk_size, parallel=parallel)
+    kw = dict(chunk_size=chunk_size, parallel=parallel,
+              format_version=format_version, algorithm=algorithm)
+    tree_a = build_tree(filepath_a, **kw)
+    tree_b = build_tree(filepath_b, **kw)
     return compare_model_trees(tree_a, tree_b, detailed=True)
 
 
@@ -380,11 +427,15 @@ def build_sharded_tree(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     model_name: Optional[str] = None,
     parallel: bool = True,
+    *,
+    format_version: int = DEFAULT_FORMAT_VERSION,
+    algorithm=None,
 ) -> ModelMerkleTree:
     """Build one Merkle tree over all shards of a model directory (read-only)."""
     if model_name is None:
         model_name = Path(directory).resolve().name
-    return _build_tree_from_files(_shard_files(directory), chunk_size, model_name, parallel)
+    return _build_tree_from_files(_shard_files(directory), chunk_size, model_name, parallel,
+                                  format_version=format_version, algorithm=algorithm)
 
 
 def sign_sharded(
@@ -393,6 +444,10 @@ def sign_sharded(
     model_name: Optional[str] = None,
     parallel: bool = True,
     sidecar: bool = True,
+    *,
+    format_version: int = DEFAULT_FORMAT_VERSION,
+    algorithm=None,
+    include_chunks: bool = True,
 ) -> ModelMerkleTree:
     """
     Sign a sharded safetensors model (multiple .safetensors files + index.json).
@@ -407,9 +462,11 @@ def sign_sharded(
     Returns:
         ModelMerkleTree covering all shards
     """
-    tree = build_sharded_tree(directory, chunk_size, model_name, parallel)
+    tree = build_sharded_tree(directory, chunk_size, model_name, parallel,
+                              format_version=format_version, algorithm=algorithm)
     if sidecar:
-        tree.to_json(str(Path(directory) / SHARDED_MANIFEST_FILENAME))
+        tree.to_json(str(Path(directory) / SHARDED_MANIFEST_FILENAME),
+                     include_chunks=include_chunks)
     return tree
 
 
@@ -419,6 +476,9 @@ def verify_sharded(
     expected_root: Optional[str] = None,
     parallel: bool = True,
     chunk_size: Optional[int] = None,
+    *,
+    format_version: Optional[int] = None,
+    algorithm=None,
 ) -> Tuple[bool, Dict[str, Any]]:
     """
     Verify a sharded (or single-file) safetensors model directory.
@@ -429,12 +489,14 @@ def verify_sharded(
     if manifest is None:
         manifest = str(Path(directory) / SHARDED_MANIFEST_FILENAME)
 
-    def build_current(cs: int, name: str) -> ModelMerkleTree:
-        return build_sharded_tree(directory, chunk_size=cs, model_name=name or None,
-                                  parallel=parallel)
+    def build_current(plan, name: str) -> ModelMerkleTree:
+        return build_sharded_tree(directory, chunk_size=plan.chunk_size, model_name=name or None,
+                                  parallel=parallel, format_version=plan.format_version,
+                                  algorithm=plan.algorithm)
 
     return _verify_against(
-        build_current, manifest, expected_root, chunk_size, {"directory": directory}
+        build_current, manifest, expected_root, chunk_size, {"directory": directory},
+        format_version=format_version, algorithm=algorithm,
     )
 
 
@@ -463,6 +525,9 @@ def from_hf_repo(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     parallel: bool = True,
     manifest_path: Optional[str] = None,
+    *,
+    format_version: int = DEFAULT_FORMAT_VERSION,
+    algorithm=None,
 ) -> ModelMerkleTree:
     """
     Build a Merkle tree from a HuggingFace Hub model in the local cache.
@@ -491,6 +556,7 @@ def from_hf_repo(
     try:
         tree = build_sharded_tree(
             snapshot_dir, chunk_size=chunk_size, model_name=repo_id, parallel=parallel,
+            format_version=format_version, algorithm=algorithm,
         )
     except FileNotFoundError:
         raise FileNotFoundError(

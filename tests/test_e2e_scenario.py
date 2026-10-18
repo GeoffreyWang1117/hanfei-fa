@@ -412,10 +412,7 @@ class TestScenario08_StreamingLargeFile:
             data = f.read()
 
         # In-memory
-        from merkle_verify.chunking import chunk_bytes
-        chunks = chunk_bytes(data)
-        hashes = [compute_hash(c) for c in chunks]
-        mem_tree = MerkleTree(hashes)
+        mem_tree = MerkleTree.from_bytes(data)
 
         # Streaming
         stream_tree = build_file_merkle_tree(base_safetensors)

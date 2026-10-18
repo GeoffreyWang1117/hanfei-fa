@@ -12,6 +12,7 @@ import pytest
 from merkle_verify import build_model_merkle_tree, check_roots
 from merkle_verify._safetensors_io import read_header
 from merkle_verify._tensor_bytes import flatten_state_dict, to_bytes
+from .helpers import SAMPLE, flip_last_byte, write_safetensors
 from merkle_verify.safetensors_adapter import (
     _resolve_hf_snapshot,
     from_hf_repo,
@@ -29,37 +30,6 @@ def run_cli(*args):
         capture_output=True, text=True, timeout=60,
     )
     return r.returncode, r.stdout, r.stderr
-
-
-def write_safetensors(path, tensors, metadata=None):
-    """Write a safetensors file from {name: (dtype, shape, raw_bytes)} without any library."""
-    header = {}
-    offset = 0
-    for name, (dtype, shape, raw) in tensors.items():
-        header[name] = {"dtype": dtype, "shape": list(shape), "data_offsets": [offset, offset + len(raw)]}
-        offset += len(raw)
-    if metadata:
-        header["__metadata__"] = metadata
-    hjson = json.dumps(header).encode()
-    hjson += b" " * (-len(hjson) % 8)
-    with open(path, "wb") as f:
-        f.write(struct.pack("<Q", len(hjson)))
-        f.write(hjson)
-        for _, _, raw in tensors.values():
-            f.write(raw)
-
-
-def flip_last_byte(path):
-    data = bytearray(open(path, "rb").read())
-    data[-1] ^= 0xFF
-    open(path, "wb").write(bytes(data))
-
-
-SAMPLE = {
-    "layer.0.weight": ("F32", (8, 8), bytes(range(256))),
-    "layer.0.bias": ("F32", (8,), bytes(range(32))),
-    "layer.1.weight": ("BF16", (16, 4), bytes(range(128))),
-}
 
 
 @pytest.fixture
@@ -131,7 +101,10 @@ class TestSafetensorsReader:
 
     def test_root_equals_in_memory_bytes(self, st_file):
         blobs = {name: raw for name, (_, _, raw) in SAMPLE.items()}
-        assert sign(st_file, sidecar=False).model_root == \
+        assert sign(st_file, sidecar=False, format_version=1).model_root == \
+            build_model_merkle_tree(blobs, parallel=False, format_version=1).model_root
+        # v2 binds dtype and shape, which bare bytes do not carry
+        assert sign(st_file, sidecar=False).model_root != \
             build_model_merkle_tree(blobs, parallel=False).model_root
 
     def test_streaming_matches_for_multi_chunk_tensors(self, tmp_path):
@@ -139,8 +112,14 @@ class TestSafetensorsReader:
         raw = os.urandom(5 * 1024 + 17)
         write_safetensors(p, {"w": ("U8", (len(raw),), raw)})
         for cs in (1024, 4096, 1 << 20):
+            assert sign(p, chunk_size=cs, sidecar=False, format_version=1).model_root == \
+                build_model_merkle_tree({"w": raw}, chunk_size=cs, parallel=False,
+                                        format_version=1).model_root
+        np = pytest.importorskip("numpy")
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        for cs in (1024, 4096, 1 << 20):
             assert sign(p, chunk_size=cs, sidecar=False).model_root == \
-                build_model_merkle_tree({"w": raw}, chunk_size=cs, parallel=False).model_root
+                build_model_merkle_tree({"w": arr}, chunk_size=cs, parallel=False).model_root
 
     def test_empty_tensor(self, tmp_path):
         p = str(tmp_path / "empty.safetensors")
@@ -191,8 +170,11 @@ class TestSafetensorsReader:
         }
         st_numpy.save_file(tensors, p)
         blobs = {k: v.tobytes() for k, v in tensors.items()}
+        assert sign(p, chunk_size=1024, sidecar=False, format_version=1).model_root == \
+            build_model_merkle_tree(blobs, chunk_size=1024, parallel=False,
+                                    format_version=1).model_root
         assert sign(p, chunk_size=1024, sidecar=False).model_root == \
-            build_model_merkle_tree(blobs, chunk_size=1024, parallel=False).model_root
+            build_model_merkle_tree(tensors, chunk_size=1024, parallel=False).model_root
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +186,8 @@ class TestTensorInputs:
         np = pytest.importorskip("numpy")
         a = np.arange(1000, dtype=np.float32)
         assert to_bytes(a) == a.tobytes()
-        assert build_model_merkle_tree({"x.w": a}, parallel=False).model_root == \
-            build_model_merkle_tree({"x.w": a.tobytes()}, parallel=False).model_root
+        assert build_model_merkle_tree({"x.w": a}, parallel=False, format_version=1).model_root == \
+            build_model_merkle_tree({"x.w": a.tobytes()}, parallel=False, format_version=1).model_root
 
     def test_big_endian_numpy_is_normalised(self):
         np = pytest.importorskip("numpy")
@@ -216,8 +198,8 @@ class TestTensorInputs:
         torch = pytest.importorskip("torch")
         sd = {"l.0.weight": torch.randn(4, 4), "l.0.bias": torch.randn(4)}
         blobs = {k: v.numpy().tobytes() for k, v in sd.items()}
-        assert build_model_merkle_tree(sd, parallel=False).model_root == \
-            build_model_merkle_tree(blobs, parallel=False).model_root
+        assert build_model_merkle_tree(sd, parallel=False, format_version=1).model_root == \
+            build_model_merkle_tree(blobs, parallel=False, format_version=1).model_root
 
     def test_torch_bf16(self):
         torch = pytest.importorskip("torch")
@@ -466,8 +448,9 @@ class TestCLIManifests:
         assert run_cli("diff", st_file, p)[0] == 2
 
     def test_version(self):
+        from merkle_verify import __version__
         rc, out, _ = run_cli("--version")
-        assert rc == 0 and "0.2.1" in out
+        assert rc == 0 and __version__ in out
 
 
 class TestChunkSizeConsistency:

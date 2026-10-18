@@ -8,6 +8,7 @@ Two-level: chunks -> params -> model (no layer grouping)
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 
+from merkle_verify.format import FORMAT_V1
 from merkle_verify.merkle_tree import MerkleTree
 from merkle_verify.hasher import compute_hash
 from merkle_verify.chunking import chunk_bytes, DEFAULT_CHUNK_SIZE
@@ -56,7 +57,7 @@ def build_flat_merkle_tree(
     for param_name, data in blobs.items():
         chunks = chunk_bytes(data, chunk_size)
         chunk_hashes = [compute_hash(chunk) for chunk in chunks]
-        model_tree.param_trees[param_name] = MerkleTree(chunk_hashes, chunk_size)
+        model_tree.param_trees[param_name] = MerkleTree(chunk_hashes, chunk_size, version=FORMAT_V1)
     model_tree.compute_model_root()
     return model_tree
 

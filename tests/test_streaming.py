@@ -6,6 +6,7 @@ import pytest
 
 from merkle_verify.hasher import compute_hash
 from merkle_verify.chunking import chunk_bytes
+from merkle_verify.format import hash_leaf
 from merkle_verify.merkle_tree import MerkleTree, build_file_merkle_tree
 
 
@@ -13,9 +14,7 @@ class TestMerkleTreeFromFile:
     def test_matches_in_memory(self):
         """Streaming build produces same root as in-memory build."""
         data = os.urandom(100_000)
-        chunks = chunk_bytes(data, 16384)
-        hashes = [compute_hash(c) for c in chunks]
-        in_memory = MerkleTree(hashes, chunk_size=16384)
+        in_memory = MerkleTree.from_bytes(data, chunk_size=16384)
 
         stream = io.BytesIO(data)
         streamed = MerkleTree.from_file(stream, chunk_size=16384)
@@ -29,7 +28,9 @@ class TestMerkleTreeFromFile:
         stream = io.BytesIO(data)
         tree = MerkleTree.from_file(stream, chunk_size=16384)
         assert tree.num_chunks == 1
-        assert tree.root_hash == compute_hash(data)
+        assert tree.root_hash == hash_leaf(data)
+        v1 = MerkleTree.from_file(io.BytesIO(data), chunk_size=16384, version=1)
+        assert v1.root_hash == compute_hash(data)
 
     def test_exact_chunk_boundary(self):
         """Works when file size is exact multiple of chunk size."""
@@ -41,7 +42,12 @@ class TestMerkleTreeFromFile:
     def test_empty_file_raises(self):
         stream = io.BytesIO(b"")
         with pytest.raises(ValueError, match="empty"):
-            MerkleTree.from_file(stream)
+            MerkleTree.from_file(stream, version=1)
+
+    def test_empty_file_v2_is_one_empty_chunk(self):
+        tree = MerkleTree.from_file(io.BytesIO(b""))
+        assert tree.num_chunks == 1 and tree.num_bytes == 0
+        assert tree.root_hash == hash_leaf(b"")
 
     def test_custom_chunk_size(self):
         data = os.urandom(10_000)
@@ -67,9 +73,7 @@ class TestBuildFileMerkleTree:
         tree = build_file_merkle_tree(filepath)
 
         # Compare with in-memory
-        chunks = chunk_bytes(data, 16384)
-        hashes = [compute_hash(c) for c in chunks]
-        expected = MerkleTree(hashes, chunk_size=16384)
+        expected = MerkleTree.from_bytes(data, chunk_size=16384)
         assert tree.root_hash == expected.root_hash
 
     def test_custom_chunk_size(self, tmp_path):

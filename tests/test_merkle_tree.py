@@ -31,20 +31,20 @@ class TestMerkleTreeConstruction:
 
     def test_two_chunks(self):
         h = [compute_hash(b"a"), compute_hash(b"b")]
-        tree = MerkleTree(h)
+        tree = MerkleTree(h, version=1)
         assert tree.root_hash == hash_pair(h[0], h[1])
 
     def test_four_chunks(self):
         h = [compute_hash(f"c{i}".encode()) for i in range(4)]
-        tree = MerkleTree(h)
+        tree = MerkleTree(h, version=1)
         left = hash_pair(h[0], h[1])
         right = hash_pair(h[2], h[3])
         assert tree.root_hash == hash_pair(left, right)
 
     def test_odd_chunks_duplication(self):
-        """Odd number of chunks: last node is duplicated."""
+        """v1: with an odd number of chunks the last node is duplicated."""
         h = [compute_hash(f"c{i}".encode()) for i in range(3)]
-        tree = MerkleTree(h)
+        tree = MerkleTree(h, version=1)
         left = hash_pair(h[0], h[1])
         right = hash_pair(h[2], h[2])  # duplicated
         assert tree.root_hash == hash_pair(left, right)
@@ -160,9 +160,15 @@ class TestMerkleTreeSerialisation:
         assert restored.chunk_hashes == simple_tree.chunk_hashes
         assert restored.chunk_size == simple_tree.chunk_size
 
-    def test_to_dict_keys(self, simple_tree):
+    def test_to_dict_keys_v1(self):
+        tree = MerkleTree([compute_hash(b"a"), compute_hash(b"b")], chunk_size=16, version=1)
+        assert set(tree.to_dict()) == {"root_hash", "num_chunks", "chunk_size", "chunk_hashes"}
+
+    def test_to_dict_keys_v2(self, simple_tree):
         d = simple_tree.to_dict()
-        assert set(d.keys()) == {"root_hash", "num_chunks", "chunk_size", "chunk_hashes"}
+        assert set(d.keys()) == {"format", "format_version", "algorithm", "root_hash", "num_bytes",
+                                 "num_chunks", "chunk_size", "dtype", "shape", "chunk_hashes"}
+        assert d["format_version"] == 2
 
 
 # ── LayerMerkleTree ─────────────────────────────────────────────────────
@@ -173,9 +179,7 @@ class TestLayerMerkleTree:
         layer = LayerMerkleTree(layer_name="layer.0")
         for name in ["weight", "bias"]:
             data = os.urandom(512)
-            chunks = chunk_bytes(data, 128)
-            hashes = [compute_hash(c) for c in chunks]
-            layer.param_trees[name] = MerkleTree(hashes, chunk_size=128)
+            layer.param_trees[name] = MerkleTree.from_bytes(data, chunk_size=128)
         return layer
 
     def test_compute_layer_root(self):
@@ -193,8 +197,7 @@ class TestLayerMerkleTree:
             layer = LayerMerkleTree(layer_name="l")
             mapping = {"weight": data_w, "bias": data_b}
             for name in order:
-                hashes = [compute_hash(c) for c in chunk_bytes(mapping[name], 128)]
-                layer.param_trees[name] = MerkleTree(hashes, 128)
+                layer.param_trees[name] = MerkleTree.from_bytes(mapping[name], 128)
             layer.compute_layer_root()
             return layer
 

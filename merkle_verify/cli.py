@@ -26,6 +26,8 @@ from pathlib import Path
 
 from merkle_verify import __version__
 from merkle_verify.chunking import DEFAULT_CHUNK_SIZE
+from merkle_verify.format import DEFAULT_FORMAT_VERSION, FORMAT_V1, SUPPORTED_FORMATS, parse_root
+from merkle_verify.hasher import HashAlgorithm, resolve_algorithm
 from merkle_verify.merkle_tree import MerkleTree, ModelMerkleTree, build_file_merkle_tree
 
 EXIT_OK = 0
@@ -60,9 +62,18 @@ def _need_torch():
         raise CLIError("torch not installed. Run: pip install merkle-weight-verify[torch]")
 
 
+def _fmt_kwargs(args) -> dict:
+    """format_version / algorithm for building new trees."""
+    return {
+        "format_version": args.format_version or DEFAULT_FORMAT_VERSION,
+        "algorithm": args.algorithm,
+    }
+
+
 def _print_model_summary(tree: ModelMerkleTree, elapsed: float, verbose: bool) -> None:
     print(f"root: {tree.model_root}")
     if verbose:
+        print(f"  format: v{tree.format_version}, {tree.algorithm.value}")
         n_params = sum(len(lt.param_trees) for lt in tree.layer_trees.values())
         print(f"  tensors: {n_params}")
         print(f"  layers: {len(tree.layer_trees)}")
@@ -72,11 +83,12 @@ def _print_model_summary(tree: ModelMerkleTree, elapsed: float, verbose: bool) -
 def cmd_hash(args):
     """Compute Merkle root hash of a file."""
     t0 = time.time()
-    tree = build_file_merkle_tree(args.file, chunk_size=args.chunk_size)
+    tree = build_file_merkle_tree(args.file, chunk_size=args.chunk_size, **_fmt_kwargs(args))
     elapsed = time.time() - t0
 
     print(f"{tree.root_hash}  {args.file}")
     if args.verbose:
+        print(f"  format: v{tree.version}, {tree.algorithm.value}")
         print(f"  chunks: {tree.num_chunks}")
         print(f"  chunk_size: {tree.chunk_size}")
         print(f"  time: {elapsed:.3f}s")
@@ -88,22 +100,28 @@ def cmd_sign(args):
     path = args.file
     kind = _kind(path)
     t0 = time.time()
+    kw = dict(chunk_size=args.chunk_size, **_fmt_kwargs(args))
+    if args.compact:
+        if kw["format_version"] == FORMAT_V1:
+            raise CLIError("--compact needs format version 2")
+        kw["include_chunks"] = False
 
     if kind == "dir":
         from merkle_verify.safetensors_adapter import sign_sharded, SHARDED_MANIFEST_FILENAME
-        tree = sign_sharded(path, chunk_size=args.chunk_size)
+        tree = sign_sharded(path, **kw)
         manifest = str(Path(path) / SHARDED_MANIFEST_FILENAME)
     elif kind == "safetensors":
         from merkle_verify.safetensors_adapter import sign, _sidecar_path
-        tree = sign(path, chunk_size=args.chunk_size)
+        tree = sign(path, **kw)
         manifest = _sidecar_path(path)
     elif kind == "torch":
         _need_torch()
         from merkle_verify.pytorch_adapter import sign_checkpoint, _sidecar_path
-        tree = sign_checkpoint(path, chunk_size=args.chunk_size)
+        tree = sign_checkpoint(path, **kw)
         manifest = _sidecar_path(path)
     else:
-        file_tree = build_file_merkle_tree(path, chunk_size=args.chunk_size)
+        kw.pop("include_chunks", None)
+        file_tree = build_file_merkle_tree(path, **kw)
         manifest = str(Path(path).with_suffix(".merkle.json"))
         with open(manifest, "w") as f:
             json.dump(file_tree.to_dict(), f, indent=2)
@@ -119,27 +137,45 @@ def cmd_sign(args):
     return EXIT_OK
 
 
-def _verify_generic(path: str, manifest_path: str, expected_root, chunk_size_arg):
+def _verify_generic(path: str, manifest_path: str, expected_root, args):
     try:
         with open(manifest_path) as f:
-            stored = json.load(f)
+            data = json.load(f)
     except FileNotFoundError:
-        stored = None
+        data = None
         if expected_root is None:
             return False, {"error": f"manifest not found: {manifest_path}"}
 
-    if stored is not None and "root_hash" not in stored:
-        raise CLIError(f"{manifest_path}: not a single-file manifest")
-    chunk_size = stored.get("chunk_size", DEFAULT_CHUNK_SIZE) if stored else chunk_size_arg
-    tree = build_file_merkle_tree(path, chunk_size=chunk_size)
-    reference = expected_root if expected_root is not None else stored["root_hash"]
+    stored = None
+    if data is not None:
+        if "root_hash" not in data:
+            raise CLIError(f"{manifest_path}: not a single-file manifest")
+        try:
+            stored = MerkleTree.from_dict(data, algorithm=args.algorithm)
+        except (ValueError, KeyError, TypeError) as e:
+            if expected_root is None:
+                return False, {"error": f"invalid manifest {manifest_path}: {e}"}
+
+    if expected_root is None:
+        version, alg, chunk_size = stored.version, stored.algorithm, stored.chunk_size
+    else:
+        prefix = parse_root(expected_root)[0]
+        version = args.format_version or (stored.version if stored else DEFAULT_FORMAT_VERSION)
+        alg = resolve_algorithm(args.algorithm or prefix or (stored.algorithm if stored else None))
+        chunk_size = args.chunk_size if args.chunk_size_given else (
+            stored.chunk_size if stored else DEFAULT_CHUNK_SIZE)
+
+    tree = build_file_merkle_tree(path, chunk_size=chunk_size, format_version=version, algorithm=alg)
+    reference = parse_root(expected_root)[1] if expected_root is not None else stored.root_hash
     details = {"computed_root": tree.root_hash}
     if expected_root is not None:
         details["expected_root"] = expected_root
     else:
-        details["stored_root"] = stored["root_hash"]
-    if tree.root_hash != reference and stored and "chunk_hashes" in stored:
-        changed, _ = tree.diff_tree(MerkleTree.from_dict(stored))
+        details["stored_root"] = stored.root_hash
+    comparable = stored is not None and stored.has_chunk_hashes and \
+        (stored.version, stored.algorithm, stored.chunk_size) == (version, alg, chunk_size)
+    if tree.root_hash != reference and comparable:
+        changed, _ = tree.diff_tree(stored)
         details["changed_chunks"] = changed
     return tree.root_hash == reference, details
 
@@ -149,25 +185,26 @@ def cmd_verify(args):
     path = args.file
     kind = _kind(path)
     expected = args.expected_root
-    chunk_size = args.chunk_size if args.chunk_size_given else None
+    kw = dict(
+        manifest=args.manifest, expected_root=expected,
+        chunk_size=args.chunk_size if args.chunk_size_given else None,
+        format_version=args.format_version, algorithm=args.algorithm,
+    )
     t0 = time.time()
 
     if kind == "dir":
         from merkle_verify.safetensors_adapter import verify_sharded
-        is_valid, details = verify_sharded(
-            path, manifest=args.manifest, expected_root=expected, chunk_size=chunk_size)
+        is_valid, details = verify_sharded(path, **kw)
     elif kind == "safetensors":
         from merkle_verify.safetensors_adapter import verify
-        is_valid, details = verify(
-            path, manifest=args.manifest, expected_root=expected, chunk_size=chunk_size)
+        is_valid, details = verify(path, **kw)
     elif kind == "torch":
         _need_torch()
         from merkle_verify.pytorch_adapter import verify_checkpoint
-        is_valid, details = verify_checkpoint(
-            path, manifest=args.manifest, expected_root=expected, chunk_size=chunk_size)
+        is_valid, details = verify_checkpoint(path, **kw)
     else:
         manifest_path = args.manifest or str(Path(path).with_suffix(".merkle.json"))
-        is_valid, details = _verify_generic(path, manifest_path, expected, args.chunk_size)
+        is_valid, details = _verify_generic(path, manifest_path, expected, args)
     elapsed = time.time() - t0
 
     if is_valid:
@@ -189,6 +226,8 @@ def cmd_verify(args):
                 print(f"  changed chunks: {changed[:20]}{more}")
     if details.get("manifest_mismatch"):
         print("  warning: the manifest's root differs from --expected-root")
+    if details.get("manifest_ignored"):
+        print(f"  note: {details['manifest_ignored']}")
 
     if args.verbose:
         print(f"  time: {elapsed:.3f}s")
@@ -198,9 +237,9 @@ def cmd_verify(args):
 def _load_json_manifest(path: str):
     with open(path) as f:
         data = json.load(f)
-    if "layer_trees" in data:
+    if "layer_trees" in data or "tensors" in data:
         return ModelMerkleTree.from_dict(data)
-    if "chunk_hashes" in data:
+    if "root_hash" in data:
         return MerkleTree.from_dict(data)
     raise CLIError(f"{path}: not a merkle-verify manifest")
 
@@ -224,20 +263,21 @@ def cmd_diff(args):
     if kind_a != kind_b:
         raise CLIError(f"cannot diff a {kind_a} input against a {kind_b} input")
     t0 = time.time()
+    kw = dict(chunk_size=args.chunk_size, **_fmt_kwargs(args))
 
     if kind_a == "dir":
         from merkle_verify.safetensors_adapter import build_sharded_tree
         result = compare_model_trees(
-            build_sharded_tree(args.file_a, chunk_size=args.chunk_size),
-            build_sharded_tree(args.file_b, chunk_size=args.chunk_size),
+            build_sharded_tree(args.file_a, **kw),
+            build_sharded_tree(args.file_b, **kw),
         )
     elif kind_a == "safetensors":
         from merkle_verify.safetensors_adapter import diff
-        result = diff(args.file_a, args.file_b, chunk_size=args.chunk_size)
+        result = diff(args.file_a, args.file_b, **kw)
     elif kind_a == "torch":
         _need_torch()
         from merkle_verify.pytorch_adapter import diff_checkpoints
-        result = diff_checkpoints(args.file_a, args.file_b, chunk_size=args.chunk_size)
+        result = diff_checkpoints(args.file_a, args.file_b, **kw)
     elif kind_a == "json":
         tree_a = _load_json_manifest(args.file_a)
         tree_b = _load_json_manifest(args.file_b)
@@ -248,8 +288,8 @@ def cmd_diff(args):
             return EXIT_OK
         result = compare_model_trees(tree_a, tree_b, detailed=True)
     else:
-        tree_a = build_file_merkle_tree(args.file_a, chunk_size=args.chunk_size)
-        tree_b = build_file_merkle_tree(args.file_b, chunk_size=args.chunk_size)
+        tree_a = build_file_merkle_tree(args.file_a, **kw)
+        tree_b = build_file_merkle_tree(args.file_b, **kw)
         _print_chunk_diff(tree_a, tree_b, time.time() - t0, args.verbose)
         return EXIT_OK
     elapsed = time.time() - t0
@@ -266,10 +306,17 @@ def cmd_diff(args):
     return EXIT_OK
 
 
+def _format_label(version: int, algorithm: HashAlgorithm) -> str:
+    if version == FORMAT_V1:
+        return f"v1 (algorithm not recorded; assumed {algorithm.value})"
+    return f"v{version}, {algorithm.value}"
+
+
 def cmd_info(args):
     """Show info about a .merkle.json manifest."""
     tree = _load_json_manifest(args.manifest)
     if isinstance(tree, MerkleTree):
+        print(f"format: {_format_label(tree.version, tree.algorithm)}")
         print(f"root: {tree.root_hash}")
         print(f"chunks: {tree.num_chunks}")
         print(f"chunk_size: {tree.chunk_size}")
@@ -282,6 +329,7 @@ def cmd_info(args):
         for pt in lt.param_trees.values()
     )
     print(f"model: {tree.model_name}")
+    print(f"format: {_format_label(tree.format_version, tree.algorithm)}")
     print(f"root: {tree.model_root}")
     print(f"layers: {len(tree.layer_trees)}")
     print(f"params: {n_params}")
@@ -303,6 +351,7 @@ def cmd_hf_sign(args):
         cache_dir=args.cache_dir,
         chunk_size=args.chunk_size,
         manifest_path=args.output,
+        **_fmt_kwargs(args),
     )
     elapsed = time.time() - t0
     n_params = sum(len(lt.param_trees) for lt in tree.layer_trees.values())
@@ -328,6 +377,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Chunk size in bytes (default: {DEFAULT_CHUNK_SIZE}; "
              "verify uses the manifest's chunk size unless this is given)"
     )
+    parser.add_argument(
+        "--format-version", type=int, choices=SUPPORTED_FORMATS, default=None,
+        help=f"Manifest format for new trees (default: {DEFAULT_FORMAT_VERSION}; "
+             "verify follows the manifest)"
+    )
+    parser.add_argument(
+        "--algorithm", choices=[a.value for a in HashAlgorithm], default=None,
+        help="Hash algorithm for new trees (default: sha256; verify follows the manifest)"
+    )
 
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -336,6 +394,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_sign = sub.add_parser("sign", help="Build tree + write .merkle.json (weights are not modified)")
     p_sign.add_argument("file", help="File or model directory to sign")
+    p_sign.add_argument("--compact", action="store_true",
+                        help="Omit per-chunk hashes (v2): smaller manifest, tensor-level diffs only")
 
     p_verify = sub.add_parser("verify", help="Re-hash and verify against a manifest or root")
     p_verify.add_argument("file", help="File or model directory to verify")

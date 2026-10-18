@@ -27,7 +27,7 @@ def test_generated_by_020():
 
 @pytest.mark.parametrize("case", VECTORS["chunk_trees"], ids=lambda c: f"n={len(c['leaves'])}")
 def test_chunk_tree_roots(case):
-    assert MerkleTree(case["leaves"], chunk_size=16).root_hash == case["root"]
+    assert MerkleTree(case["leaves"], chunk_size=16, version=1).root_hash == case["root"]
 
 
 @pytest.mark.parametrize("chunk_size", sorted(VECTORS["model"]["by_chunk_size"], key=int))
@@ -37,7 +37,8 @@ def test_model_roots(chunk_size, parallel):
     blobs = {name: blob(*v["seed_len"]) for name, v in spec["blobs"].items()}
     expected = spec["by_chunk_size"][chunk_size]
     tree = build_model_merkle_tree(
-        blobs, chunk_size=int(chunk_size), model_name="golden", parallel=parallel, num_workers=4
+        blobs, chunk_size=int(chunk_size), model_name="golden", parallel=parallel, num_workers=4,
+        format_version=1,
     )
     assert tree.model_root == expected["model_root"]
     assert {k: v.layer_root for k, v in tree.layer_trees.items()} == expected["layer_roots"]
@@ -48,4 +49,17 @@ def test_model_roots(chunk_size, parallel):
 def test_file_root():
     spec = VECTORS["file"]
     data = blob(*spec["seed_len"])
-    assert MerkleTree.from_file(io.BytesIO(data), spec["chunk_size"]).root_hash == spec["root"]
+    tree = MerkleTree.from_file(io.BytesIO(data), spec["chunk_size"], version=1)
+    assert tree.root_hash == spec["root"]
+
+
+def test_v1_manifest_roundtrip_keeps_roots():
+    spec = VECTORS["model"]
+    blobs = {name: blob(*v["seed_len"]) for name, v in spec["blobs"].items()}
+    tree = build_model_merkle_tree(blobs, chunk_size=1024, parallel=False, format_version=1)
+    data = tree.to_dict()
+    assert "format_version" not in data and "layer_trees" in data  # 0.2.x layout
+    from merkle_verify import ModelMerkleTree
+    restored = ModelMerkleTree.from_dict(data)
+    assert restored.format_version == 1
+    assert restored.verify() is True
