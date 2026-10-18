@@ -18,21 +18,20 @@ so manifests are interchangeable with those produced by version 0.2.0.
 
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from merkle_verify._chunk_hashing import hash_file_ranges, leaf_hasher
 from merkle_verify._safetensors_io import (
     TensorInfo,
-    iter_tensor_chunks,
     read_header,
     read_tensor_bytes,
 )
 from merkle_verify import format as fmt
 from merkle_verify.chunking import DEFAULT_CHUNK_SIZE
 from merkle_verify.comparison import check_roots, compare_model_trees, plan_rehash
-from merkle_verify.format import DEFAULT_FORMAT_VERSION, FORMAT_V1
-from merkle_verify.hasher import compute_hash, resolve_algorithm
+from merkle_verify.format import DEFAULT_FORMAT_VERSION
+from merkle_verify.hasher import resolve_algorithm
 from merkle_verify.merkle_tree import (
     DEFAULT_NUM_WORKERS,
     MerkleTree,
@@ -78,14 +77,12 @@ def _tensor_tree(
 ) -> MerkleTree:
     """Build one tensor's chunk tree by streaming its byte range."""
     alg = resolve_algorithm(algorithm)
-    if format_version == FORMAT_V1:
-        leaf = lambda c: compute_hash(c, alg)  # noqa: E731
-    else:
-        leaf = lambda c: fmt.hash_leaf(c, alg)  # noqa: E731
-    with open(filepath, "rb") as f:
-        hashes = [leaf(c) for c in iter_tensor_chunks(f, info, chunk_size)]
-    if not hashes:
-        hashes = [leaf(b"")]
+    hashes = hash_file_ranges([(info.name, filepath, info.offset, info.nbytes)], chunk_size,
+                              leaf_hasher(format_version, alg))[info.name]
+    return _tree(hashes, info, chunk_size, format_version, alg)
+
+
+def _tree(hashes, info: TensorInfo, chunk_size: int, format_version: int, alg) -> MerkleTree:
     return MerkleTree(
         hashes, chunk_size, version=format_version, algorithm=alg,
         num_bytes=info.nbytes, dtype=info.dtype, shape=info.shape,
@@ -123,17 +120,15 @@ def _build_tree_from_files(
         num_workers = DEFAULT_NUM_WORKERS
     fmt.check_format_version(format_version)
     alg = resolve_algorithm(algorithm)
-
-    def build(entry: Tuple[str, TensorInfo]) -> Tuple[str, MerkleTree]:
-        path, info = entry
-        return info.name, _tensor_tree(path, info, chunk_size, format_version, alg)
-
-    if parallel and num_workers > 1 and len(entries) > 1:
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            param_trees = dict(executor.map(build, entries))
-    else:
-        param_trees = dict(build(e) for e in entries)
-
+    leaves = hash_file_ranges(
+        [(info.name, path, info.offset, info.nbytes) for path, info in entries],
+        chunk_size, leaf_hasher(format_version, alg),
+        workers=num_workers if parallel else 1,
+    )
+    param_trees = {
+        info.name: _tree(leaves[info.name], info, chunk_size, format_version, alg)
+        for _, info in entries
+    }
     return assemble_model_tree(param_trees, model_name=model_name)
 
 

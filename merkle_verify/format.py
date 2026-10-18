@@ -16,7 +16,7 @@ and is kept bit-for-bit. Format v2 is defined here:
 import struct
 from typing import List, Optional, Sequence, Tuple, Union
 
-from merkle_verify.hasher import HashAlgorithm, compute_digest, resolve_algorithm
+from merkle_verify.hasher import HashAlgorithm, compute_digest, hasher_factory, resolve_algorithm
 
 FORMAT_V1 = 1
 FORMAT_V2 = 2
@@ -92,7 +92,10 @@ def name_sort_key(name: str) -> bytes:
 
 def hash_leaf(chunk: bytes, algorithm: Algorithm = None) -> str:
     """v2 chunk leaf: ``H(0x00 || chunk)``, hex."""
-    return compute_digest(TAG_LEAF + chunk, algorithm).hex()
+    h = hasher_factory(algorithm)()
+    h.update(TAG_LEAF)
+    h.update(chunk)
+    return h.hexdigest()
 
 
 def hash_node(left: str, right: str, algorithm: Algorithm = None) -> str:

@@ -77,6 +77,11 @@ def _get_hasher(algorithm: HashAlgorithm) -> Callable:
     return hashers[algorithm]
 
 
+def hasher_factory(algorithm: Optional[Union[HashAlgorithm, str]] = None) -> Callable:
+    """Zero-argument constructor of a hashlib-style hasher for ``algorithm``."""
+    return _get_hasher(resolve_algorithm(algorithm))
+
+
 def resolve_algorithm(
     algorithm: Optional[Union[HashAlgorithm, str]] = None
 ) -> HashAlgorithm:

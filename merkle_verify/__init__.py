@@ -52,6 +52,7 @@ __version__ = "0.3.0.dev0"
 # - merkle_verify.pytorch_adapter: pip install merkle-weight-verify[torch]
 
 __all__ = [
+    "build_model_merkle_tree",
     "MerkleTree",
     "LayerMerkleTree",
     "ModelMerkleTree",

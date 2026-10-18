@@ -30,8 +30,9 @@ from merkle_verify.format import (
     name_sort_key,
 )
 from merkle_verify.hasher import HashAlgorithm, compute_hash, hash_pair, resolve_algorithm
-from merkle_verify.chunking import chunk_bytes, DEFAULT_CHUNK_SIZE
+from merkle_verify.chunking import DEFAULT_CHUNK_SIZE
 from merkle_verify._tensor_bytes import to_bytes_and_meta
+from merkle_verify._chunk_hashing import hash_buffer, hash_file_ranges, leaf_hasher
 
 # Default number of workers for parallel processing
 DEFAULT_NUM_WORKERS = min(4, os.cpu_count() or 1)
@@ -682,16 +683,29 @@ class MerkleTree:
         """
         version = check_format_version(version)
         alg = resolve_algorithm(algorithm)
-        leaf = (lambda c: compute_hash(c, alg)) if version == FORMAT_V1 else \
-            (lambda c: fmt.hash_leaf(c, alg))
-        chunk_hashes = []
+        leaf = leaf_hasher(version, alg)
+        chunk_hashes: List[str] = []
         total = 0
+        # read whole chunks at a time; a short read is only accepted at EOF
+        buf = bytearray(chunk_size)
+        mv = memoryview(buf)
         while True:
-            chunk = file_handle.read(chunk_size)
-            if not chunk:
+            got = 0
+            while got < chunk_size:
+                n = file_handle.readinto(mv[got:]) if hasattr(file_handle, "readinto") else None
+                if n is None:  # file-like without readinto
+                    piece = file_handle.read(chunk_size - got)
+                    n = len(piece)
+                    mv[got:got + n] = piece
+                if not n:
+                    break
+                got += n
+            if not got:
                 break
-            total += len(chunk)
-            chunk_hashes.append(leaf(chunk))
+            total += got
+            chunk_hashes.append(leaf(mv[:got]))
+            if got < chunk_size:
+                break
         if not chunk_hashes:
             if version == FORMAT_V1:
                 raise ValueError("Cannot build tree from empty file")
@@ -1229,13 +1243,7 @@ def _hash_chunks(
     Zero-length data (e.g. a tensor with a 0-sized dimension) is a single
     empty chunk, so every parameter has a well-defined root.
     """
-    alg = resolve_algorithm(algorithm)
-    if version == FORMAT_V1:
-        leaf = lambda c: compute_hash(c, alg)  # noqa: E731
-    else:
-        leaf = lambda c: fmt.hash_leaf(c, alg)  # noqa: E731
-    hashes = [leaf(chunk) for chunk in chunk_bytes(data, chunk_size)]
-    return hashes or [leaf(b"")]
+    return hash_buffer(data, chunk_size, leaf_hasher(version, algorithm))
 
 
 def _build_param_tree(
@@ -1363,6 +1371,7 @@ def build_file_merkle_tree(
     *,
     format_version: int = DEFAULT_FORMAT_VERSION,
     algorithm: AlgorithmLike = None,
+    num_workers: Optional[int] = None,
 ) -> MerkleTree:
     """
     Build a Merkle tree by streaming a file from disk.
@@ -1375,6 +1384,7 @@ def build_file_merkle_tree(
         chunk_size: Size of each chunk in bytes
         format_version: Hash format (default 2)
         algorithm: Hash algorithm (default: process default)
+        num_workers: Hashing threads (default: auto)
 
     Returns:
         MerkleTree
@@ -1383,5 +1393,13 @@ def build_file_merkle_tree(
         >>> tree = build_file_merkle_tree("model.safetensors")
         >>> print(tree.root_hash)
     """
-    with open(filepath, 'rb') as f:
-        return MerkleTree.from_file(f, chunk_size, version=format_version, algorithm=algorithm)
+    check_format_version(format_version)
+    alg = resolve_algorithm(algorithm)
+    size = os.path.getsize(filepath)
+    if size == 0 and format_version == FORMAT_V1:
+        raise ValueError("Cannot build tree from empty file")
+    leaves = hash_file_ranges(
+        [("file", filepath, 0, size)], chunk_size, leaf_hasher(format_version, alg),
+        workers=num_workers or DEFAULT_NUM_WORKERS,
+    )["file"]
+    return MerkleTree(leaves, chunk_size, version=format_version, algorithm=alg, num_bytes=size)

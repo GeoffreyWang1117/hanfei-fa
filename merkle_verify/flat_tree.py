@@ -5,7 +5,7 @@ Flat: all params at same level under model root
 Two-level: chunks -> params -> model (no layer grouping)
 """
 
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
 
 from merkle_verify.format import FORMAT_V1

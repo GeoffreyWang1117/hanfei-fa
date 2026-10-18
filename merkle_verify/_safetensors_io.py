@@ -19,7 +19,7 @@ import json
 import os
 import struct
 from dataclasses import dataclass
-from typing import BinaryIO, Dict, Iterator, Tuple
+from typing import BinaryIO, Dict, Tuple
 
 # safetensors itself rejects headers above 100 MB
 MAX_HEADER_BYTES = 100 * 1024 * 1024
@@ -115,18 +115,6 @@ def _read_exact(f: BinaryIO, n: int) -> bytes:
         parts.append(block)
         remaining -= len(block)
     return b"".join(parts)
-
-
-def iter_tensor_chunks(f: BinaryIO, info: TensorInfo, chunk_size: int) -> Iterator[bytes]:
-    """Yield a tensor's bytes in ``chunk_size`` pieces (the last may be shorter)."""
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be positive")
-    f.seek(info.offset)
-    remaining = info.nbytes
-    while remaining > 0:
-        n = min(chunk_size, remaining)
-        yield _read_exact(f, n)
-        remaining -= n
 
 
 def read_tensor_bytes(path: str, info: TensorInfo) -> bytes:

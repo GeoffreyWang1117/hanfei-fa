@@ -173,11 +173,13 @@ Full table and method: [docs/benchmarks.md](docs/benchmarks.md).
 
 | Model | Size | Build (v2) | Merged LoRA update: diff | Sync saving |
 |---|---|---|---|---|
-| Qwen/Qwen2.5-0.5B (bf16) | 988 MB | 0.51 s | 1.7 ms, 48 tensors changed | 95.5% |
-| gpt2-medium | 1520 MB | 0.83 s | 9.1 ms, 24 tensors changed | 80.1% |
+| Qwen/Qwen2.5-0.5B (bf16) | 988 MB | 0.34 s | 1.7 ms, 48 tensors changed | 95.5% |
+| gpt2-medium | 1520 MB | 0.46 s | 9.1 ms, 24 tensors changed | 80.1% |
+| Olmo-3.1-32B (bf16) | 64.5 GB | 36.9 s, disk-bound | | |
 
 Updates confined to a few tensors save 80-99% of the transfer; a full
-fine-tune rewrites everything and saves nothing.
+fine-tune rewrites everything and saves nothing. A 64 GB model needs about
+1 GB of memory to hash.
 
 ## Tests
 

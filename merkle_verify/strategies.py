@@ -8,8 +8,7 @@ Provides different strategies for determining chunk sizes:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional
-import math
+from typing import Any
 
 from merkle_verify.chunking import DEFAULT_CHUNK_SIZE
 
