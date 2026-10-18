@@ -1,206 +1,181 @@
 # merkle-weight-verify
 
-Hierarchical Merkle tree for verifying the integrity of large files -- ML model weights, datasets, or any binary blob.
+[![PyPI](https://img.shields.io/pypi/v/merkle-weight-verify.svg)](https://pypi.org/project/merkle-weight-verify/)
+[![CI](https://github.com/GeoffreyWang1117/hanfei-fa/actions/workflows/ci.yml/badge.svg)](https://github.com/GeoffreyWang1117/hanfei-fa/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-## Why
+Hierarchical Merkle trees for verifying ML model weights: one root hash for the
+whole model, and a tensor- and chunk-level diff when it does not match.
 
-Downloading a 70B model from HuggingFace? Fine-tuning and sharing weights across a team? You need to answer:
+- **"Are these exactly the weights I expect?"** Re-hash the files and compare one root.
+- **"What changed between two versions?"** A tree-walk diff names the layers,
+  tensors and 16 KB chunks that differ, in O(k log C) hash comparisons for k
+  changed chunks out of C.
+- **"How much do I need to re-download?"** Estimate incremental-sync size from the diff.
 
-- **"Is this file exactly what I expect?"** -- O(1) root hash comparison
-- **"What changed between two versions?"** -- O(k log C) tree-walk diff, where k = changed chunks
-- **"How much do I need to re-download?"** -- incremental sync estimates (50-68% bandwidth savings for partial fine-tuning)
+The core library uses only the Python standard library. Safetensors files
+(single-file or sharded) are read by a built-in parser, so they need no extra
+packages and every dtype works, including bfloat16 and float8. PyTorch
+checkpoints need `torch`.
 
-Zero ML dependencies. Only Python standard library (`hashlib`, `dataclasses`, `json`).
-
-## Test Suite
-
-142 tests covering every public API surface, including real-model benchmarks with ResNet18:
-
-```bash
-pip install pytest torch torchvision   # test dependencies
-python -m pytest tests/ -v
-```
-
-| Module | Tests | What's covered |
-|--------|-------|----------------|
-| `test_hasher` | 15 | All 4 hash algorithms, default switching, `verify_hash`, `detect_algorithm` |
-| `test_chunking` | 10 | `chunk_bytes`, iterator, tensor, `estimate_chunk_count`, edge cases |
-| `test_merkle_tree` | 30 | Tree construction (1/2/4/odd chunks), proofs, `diff_tree`, serialisation, `LayerMerkleTree`, `ModelMerkleTree`, `build_model_merkle_tree`, `_extract_layer_name` |
-| `test_comparison` | 10 | `compare_model_trees` (detailed/not, layer-only-in-one), `estimate_sync_savings` |
-| `test_strategies` | 12 | Fixed, Adaptive, TheoreticalOptimal strategies, bounds and edge cases |
-| `test_flat_tree` | 7 | `FlatModelTree`, `flat_compare`, `TwoLevelModelTree` alias |
-| `test_benchmark_resnet18` | 15 | Real ResNet18: build, verify, proof, JSON roundtrip, fine-tuning diff, sync savings, parallel vs serial, timing benchmarks |
-
-ResNet18 benchmark results (11.7M params):
-
-| Operation | Time | Detail |
-|-----------|------|--------|
-| Build tree (parallel) | 0.034s | All 60 param tensors |
-| Build tree (serial) | 0.034s | Single-threaded baseline |
-| Compare (1 param changed) | 0.1ms | 264 hash comparisons vs 2953 total chunks |
-| Verify | 0.1ms | Full re-hash and root check |
+The same package is also published as [`hanfei-fa`](https://pypi.org/project/hanfei-fa/)
+(part of the HanFei series, alongside the Rust port
+[`hanfei-fa`](https://crates.io/crates/hanfei-fa) on crates.io). Both names
+install the same `merkle_verify` module, so install only one of them.
 
 ## Install
 
 ```bash
-pip install merkle-weight-verify
+pip install merkle-weight-verify            # core + safetensors
+pip install "merkle-weight-verify[torch]"   # + PyTorch checkpoints
+pip install "merkle-weight-verify[fast]"    # + BLAKE3 hash backend
 ```
 
-## Quick Start
+## Command line
 
-### Hash and verify a file
+```bash
+# Sign: build the tree and write a manifest next to the weights (weights are never modified)
+merkle-verify sign model.safetensors          # -> model.merkle.json
+merkle-verify sign ./Llama-3.1-8B/            # sharded: index.json + shards -> model.merkle.json
+merkle-verify sign checkpoint.pt              # PyTorch checkpoint (read-only)
+
+# Verify: re-hash the weights and compare
+merkle-verify verify model.safetensors                         # against the sidecar manifest
+merkle-verify verify ./Llama-3.1-8B/ --expected-root 9f2c...   # against a root you trust
+
+# Diff two versions (files, model directories, or manifests)
+merkle-verify diff base.safetensors finetuned.safetensors
+
+# Hash a model already in the HuggingFace cache (nothing is written to the cache)
+merkle-verify hf-sign Qwen/Qwen2.5-0.5B --revision main -o qwen.merkle.json
+```
+
+Exit codes: `0` verified, `1` verification failed, `2` error (bad input, missing file).
+
+## Python API
+
+### Safetensors
+
+```python
+from merkle_verify.safetensors_adapter import sign, verify, diff, verify_sharded
+
+tree = sign("model.safetensors")            # writes model.merkle.json
+print(tree.model_root)
+
+ok, details = verify("model.safetensors")   # re-hashes, compares with the manifest
+ok, details = verify("model.safetensors", expected_root=trusted_root)
+if not ok:
+    print(details["changed_params"])        # e.g. ['model.layers.7.mlp.down_proj.weight']
+
+changes = diff("base.safetensors", "finetuned.safetensors")
+print(changes["changed_layers"], changes["change_percentage"])
+
+ok, details = verify_sharded("./Llama-3.1-8B/", expected_root=trusted_root)
+```
+
+### PyTorch state dicts and checkpoints
+
+```python
+from merkle_verify import build_model_merkle_tree
+from merkle_verify.pytorch_adapter import sign_checkpoint, verify_checkpoint
+
+tree = build_model_merkle_tree(model.state_dict())   # tensors accepted directly, any dtype
+sign_checkpoint("checkpoint.pt")                     # nested checkpoints are flattened
+ok, details = verify_checkpoint("checkpoint.pt", expected_root=tree.model_root)
+```
+
+A tensor hashes to its contiguous little-endian bytes, which is exactly what
+safetensors stores, so `build_model_merkle_tree(state_dict)` and
+`sign("model.safetensors")` give the same root for the same weights.
+
+### Low-level trees and proofs
 
 ```python
 from merkle_verify import MerkleTree, compute_hash, chunk_bytes
 
-data = open("model.safetensors", "rb").read()
-chunks = chunk_bytes(data, chunk_size=16384)  # 16KB chunks
-hashes = [compute_hash(c) for c in chunks]
-
+hashes = [compute_hash(c) for c in chunk_bytes(data, chunk_size=16384)]
 tree = MerkleTree(hashes)
-print(tree.root_hash)  # single hash represents entire file
-```
+changed_indices, comparisons = tree.diff_tree(other_tree)
 
-### Compare two versions
-
-```python
-tree_v1 = MerkleTree(hashes_v1)
-tree_v2 = MerkleTree(hashes_v2)
-
-changed_indices, comparisons = tree_v1.diff_tree(tree_v2)
-print(f"{len(changed_indices)} chunks changed, {comparisons} hash comparisons")
-# vs. naive linear scan: would need len(hashes) comparisons
-```
-
-### Merkle proofs
-
-```python
 proof = tree.get_proof(chunk_index=42)
-assert proof.verify()  # cryptographic proof that chunk 42 is part of this tree
+assert proof.verify()
 ```
 
-### Multi-layer model trees
-
-```python
-from merkle_verify import ModelMerkleTree, LayerMerkleTree
-
-model_tree = ModelMerkleTree(model_name="llama-3-70b")
-# ... build layer trees from state_dict ...
-model_tree.compute_model_root()
-
-# Compare two model versions
-changed_layers = model_tree.get_changed_layers(other_tree)
-# Only re-download changed layers
-```
-
-### Estimate sync savings
+### Sync estimate
 
 ```python
 from merkle_verify import estimate_sync_savings
 
 savings = estimate_sync_savings(old_tree, new_tree)
-print(f"Save {savings['savings_percentage']:.1f}% bandwidth with incremental sync")
+print(f"incremental sync would transfer {100 - savings['savings_percentage']:.1f}% of the bytes")
 ```
 
-## Features
+The estimate counts changed chunks times the chunk size, so it is an upper
+bound on the bytes that differ.
 
-| Feature | Description |
-|---------|-------------|
-| **O(1) verification** | Compare root hashes to verify entire file integrity |
-| **O(k log C) diff** | Tree-walk finds only changed chunks without scanning all |
-| **Merkle proofs** | Cryptographic proof that a chunk belongs to a tree |
-| **4 hash algorithms** | SHA-256, SHA-512, SHA3-256, BLAKE2b |
-| **Hierarchical trees** | Model > Layer > Parameter > Chunk (4-level hierarchy) |
-| **Chunking strategies** | Fixed, adaptive (size-based), theoretical optimal (c*=1/p) |
-| **Incremental sync** | Estimate bandwidth savings for partial updates |
-| **Serialization** | JSON import/export for tree persistence |
-| **Parallel builds** | ThreadPoolExecutor for large models |
+## Security notes
 
-## Chunking Strategies
+**Where the trusted root comes from matters.** A `.merkle.json` sidecar is not
+authenticated: anyone who can replace the weights can also regenerate the
+sidecar. Verifying against the sidecar detects corruption and accidental
+mismatches. To detect deliberate tampering, verify against a root obtained
+through a channel the attacker does not control (`expected_root=` /
+`--expected-root`), or sign the manifest, for example with
+[Sigstore model signing](https://github.com/sigstore/model-transparency).
+Verification always re-hashes the weights; a root read from a manifest is
+never trusted on its own.
 
-```python
-from merkle_verify import FixedChunkStrategy, AdaptiveChunkStrategy, TheoreticalOptimalStrategy
+**Limitations of the current hash format (manifest format v1).** The model root
+commits to the bytes of every tensor, but:
 
-# Fixed: 16KB chunks for everything (default)
-fixed = FixedChunkStrategy(chunk_size=16384)
+- leaf and internal nodes are not domain-separated, and a level with an odd
+  number of nodes duplicates its last node, as in Bitcoin's original Merkle
+  tree, so a chunk tree's root does not uniquely determine its number of chunks;
+- tensor names are bound only through their sorted order, and dtype and shape
+  are not bound at all, so reinterpreting a tensor's bytes under another dtype
+  or shape keeps the root unchanged;
+- manifests do not record the hash algorithm.
 
-# Adaptive: chunk size scales with parameter size
-# Small params (3KB bias) -> small chunks, large params (150MB embedding) -> larger chunks
-adaptive = AdaptiveChunkStrategy(target_chunks=64)
-
-# Theoretical optimal: c* = 1/p where p = modification probability per byte
-optimal = TheoreticalOptimalStrategy(modification_prob=0.001)
-```
-
-## API Reference
-
-### Core Classes
-
-- `MerkleTree(chunk_hashes, chunk_size)` -- Build tree from chunk hashes
-- `LayerMerkleTree(layer_name)` -- Group parameter trees by layer
-- `ModelMerkleTree(model_name)` -- Top-level model tree
-
-### Hashing
-
-- `compute_hash(data, algorithm=None)` -- Hash bytes/string
-- `hash_pair(left, right)` -- Hash two child hashes (internal node)
-- `verify_hash(data, expected_hash)` -- Check data matches hash
-- `HashAlgorithm.SHA256 | SHA512 | SHA3_256 | BLAKE2B`
-
-### Comparison
-
-- `compare_model_trees(tree_a, tree_b)` -- Full model diff with 3-level pruning
-- `estimate_sync_savings(tree_a, tree_b)` -- Bandwidth savings estimate
+A versioned manifest format v2 that fixes all of these is planned for 0.3.
+Version 1 manifests will keep verifying.
 
 ## Performance
 
-Tested on GPT-2 (124M params) through LLaMA-3-70B:
+ResNet18 (11.7M parameters, 60 tensors), single workstation CPU, SHA-256, 16 KB chunks:
 
-| Operation | GPT-2 | LLaMA-7B | LLaMA-70B |
-|-----------|-------|----------|-----------|
-| Build tree | 0.3s | 2.1s | 18s |
-| Root compare | <1ms | <1ms | <1ms |
-| Full diff (1% change) | 5ms | 12ms | 45ms |
-| Full diff (naive) | 50ms | 340ms | 2.8s |
+| Operation | Time | Detail |
+|-----------|------|--------|
+| Build tree | 0.034s | All 60 tensors, serial or 4 threads |
+| Compare (1 tensor changed) | 0.1ms | 264 hash comparisons vs 2953 total chunks |
+| `ModelMerkleTree.verify()` | 0.1ms | Recomputes layer and model roots from stored tensor roots; does not re-read weights |
+
+Larger-model figures (GPT-2 through 70B, and the 50-68% sync savings for
+partial fine-tuning) come from the earlier research prototype this package was
+extracted from. They have not yet been reproduced with this package; a
+benchmark script that regenerates them is planned.
+
+## Tests
+
+```bash
+pip install pytest              # core tests
+pip install torch torchvision safetensors numpy blake3   # optional: integration tests
+python -m pytest tests/
+```
+
+Tests that need an optional package are skipped when it is missing.
+`tests/vectors/format_v1.json` pins the roots produced by the 0.2.0 release;
+every later version must reproduce them.
 
 ## Roadmap
 
-### v0.2 — Production Hardening + Ecosystem Foundations
-
-**Tier 1: Immediate (high feasibility, high impact)**
-
-- [x] **BLAKE3 fast hash backend** — 5-10x speedup via `blake3` package (AVX2/NEON SIMD, multithreading). Optional dep: `pip install merkle-weight-verify[fast]`
-- [x] **Safetensors plugin** — `merkle_verify.safetensors_adapter`: `sign()`, `verify()`, `diff()`, `verify_tensor()`. Leverages `safe_open()` per-tensor mmap access. Merkle manifest stored in sidecar `.merkle.json`. Fills gap left by safetensors Issue #220 (closed "not planned").
-- [x] **PyTorch integration** — `merkle_verify.pytorch_adapter`: `merkle_save()`, `merkle_load()`, `verify_checkpoint()`. Addresses PyTorch Issue #126952 (open, unassigned).
-- [x] **CLI tool** — `merkle-verify hash|sign|verify|diff|info` with auto-detection of safetensors/PyTorch/generic files
-- [x] **Streaming build** — `MerkleTree.from_file()` and `build_file_merkle_tree()` with O(chunk_size) memory
-- [x] **Fix Merkle proof for odd-count edge nodes** — all leaves (including duplicated last-node) now produce valid proofs
-- [x] **Optimize `get_changed_chunks()`** — replaced O(C) linear scan with O(k log C) `diff_tree()` call
-
-### v0.3 — Ecosystem Integration
-
-**Tier 2: Strategic (medium feasibility, high value)**
-
-- [ ] **HuggingFace Hub / Xet complement** — `merkle-verify hf-check <repo-id>`, `ModelMerkleTree.from_hf_cache()`. Post-download semantic verification on top of Xet's byte-level transport. xet-core is Apache-2.0 but `hf-xet` has no public chunk API, so we operate on downloaded safetensors files.
-- [ ] **Sigstore model signing integration** — Generate `.merkle.json` sidecar compatible with `model-signing` (v1.1.1) workflow. Sign Merkle manifest alongside model files for combined provenance + fine-grained verification.
-- [ ] **Delta sync protocol** — given diff, produce minimal binary patch for incremental transfer
-- [ ] **Adaptive strategy auto-tuning** — profile modification density from git history to pick optimal `c*`
-
-### v0.4+ — Scale
-
-**Tier 3: Future (low feasibility now, revisit when ecosystem matures)**
-
-- [ ] **NVIDIA cuPQC GPU backend** — 388-891 GB/s hash throughput on Blackwell GPUs. Currently blocked: C++/CUDA only, no Python bindings, v0.4 pre-release. Revisit when NVIDIA ships pip package.
-- [ ] **Distributed tree construction** — split across workers for 100B+ models
-- [ ] **Persistent tree store** — SQLite/LevelDB backend for caching trees across runs
-- [ ] **Formal verification** — prove diff_tree correctness with property-based testing (Hypothesis)
-
-### Research Directions
-
-- Empirical evaluation of `c* = 1/p` theory across fine-tuning regimes (LoRA, full, distillation)
-- Comparison with content-defined chunking (CDC/Rabin) vs fixed-size for weight files
-- Integration with federated learning: per-client diff aggregation via Merkle proofs
+- **0.3: manifest format v2.** Domain-separated, length-binding tree hashing;
+  tensor name, dtype and shape bound into each tensor's root; algorithm and
+  format version recorded in the manifest; per-tensor inclusion proofs against
+  the model root; shared test vectors with the Rust port.
+- **0.4: ecosystem.** `hf-check` against published manifests, chunk-level
+  repair from a healthy replica, Sigstore signing guide.
+- Later: property-based tests, typed API, manifest specification document.
 
 ## License
 
-Apache-2.0 — Copyright 2026 Geoffrey Wang
+Apache-2.0. Copyright 2026 Geoffrey Wang.
