@@ -23,6 +23,25 @@
             "model.norm.weight": "7b5541a6050b33b3e716c23530475da7779b7e40d145eba2bcef6b0f7987677129c4af9087cc11cf3bf1cb9154353f65969b42aa3e4e73830ffb7643a4d49055"
           }
         },
+        "blake3": {
+          "chunk_roots": {
+            "lm_head.weight": "0f05bc5b0914740cfd387c190e8a79746b57b908700389fbf30bf6c9e1d6eb5c",
+            "model.embed_tokens.weight": "bf854ee234c71f4164637335f7b5a08a2c612ceeb018b2a4d418ed6d72f53d97",
+            "model.layers.0.input_layernorm.weight": "ada0b4964abc5c71cc34e61d0fc8371057166c0f739dc4f9b80a009cb565b6ef",
+            "model.layers.0.self_attn.q_proj.weight": "9f43bb594ff486bd994c1a2245303ccadd3d3ce4aa1b91820eeefa8fdf987760",
+            "model.layers.1.mlp.down_proj.weight": "cc39125bf2ead8be962c3f161ddcb6536c5dbcf1c4a77b02302ff003d3a03ecd",
+            "model.norm.weight": "87b8771eabbb4262d20967273360fe8d87931b87a2d1d24427f529ccba12496d"
+          },
+          "model_root": "b8b41fafe784a73e4b960f301d795ce1f8bdc1ff5f5d8a9fb15412ae89759ed6",
+          "tensor_roots": {
+            "lm_head.weight": "188b67daec188a7d664679c33079ec2a16ae92f93a7fb96bb6a577d2f4dc584c",
+            "model.embed_tokens.weight": "7caf08fd84f50bf3f28021cc3fb0c3e7fbfe27844d2490de5e34e218777767b5",
+            "model.layers.0.input_layernorm.weight": "f7254a98703566bcedb9fa30ab384322b5f5dd658bb3f288628f07fb23b978a9",
+            "model.layers.0.self_attn.q_proj.weight": "d7cfa09e9c70a3f81850085f2f9d8fa94b9deea8aa1e13e0389d9bd02e7ec3c2",
+            "model.layers.1.mlp.down_proj.weight": "2c4a8ae8209409874f343bc69fa5a6260db6df52bb80990aeec92fbe2b548c57",
+            "model.norm.weight": "546525858f3e3c8200aed2b478f8bf608d8adc3afa05887c4ebd14ca665a0a2f"
+          }
+        },
         "sha256": {
           "chunk_roots": {
             "lm_head.weight": "b7605b5eede87eda92ae03219aa6676d2fbd511202fc1c468e87be02581a03c7",
@@ -148,6 +167,15 @@
             "w": "21e9840a50c41fe7fa5a53adbdcd8635658bc89cc16b1bdaa27aa6dcc54c5b57b383e589954c66aad53d8cac8d20983c0d9b9a89b3ad91b71dec97444a0fc383"
           }
         },
+        "blake3": {
+          "chunk_roots": {
+            "w": "0c07b6e63122cd7783cfdc25939c50610f2eb407dd9f62a3e25ba692fa8c67b7"
+          },
+          "model_root": "9db0d32191c2da64577e7a517f712c05bb638431549981afde78a0f9e114a304",
+          "tensor_roots": {
+            "w": "326d0ac56f6220ea67bd6f95e2f875d1384b647608eef068e379f48d82f8ede2"
+          }
+        },
         "sha256": {
           "chunk_roots": {
             "w": "f1cc75b443d6dc798d68ae4404787c0cea106e705899ee3e7fae22631b389281"
@@ -200,6 +228,17 @@
           "tensor_roots": {
             "a.empty": "ef2c2591a57494ef701cd41132fa829c7654bef4b64e9a260e738af4942931aea9f6080289d3010b7d2daf8ec0d9b179145d7ca29f6c9c5f756d9937b774c7e0",
             "a.scalar": "f68204f59851755aeeba53b353dc7e1321fcd94c380df99d5613a0a10551d90b28084c52ca0f5301bb7f0f21fb762e6542d31c81d62771d8f8b835235e9dc679"
+          }
+        },
+        "blake3": {
+          "chunk_roots": {
+            "a.empty": "2d3adedff11b61f14c886e35afa036736dcd87a74d27b5c1510225d0f592e213",
+            "a.scalar": "c53f29b170e8d3e356d510e5f3909424de99720c718611bba389e2066ff2add2"
+          },
+          "model_root": "608f5f4bbf1f4626c20462d7986d851047c432cbead81ef21b737e48341b6443",
+          "tensor_roots": {
+            "a.empty": "3708dbb6786089ef29809e34bb60441de7fc7f7d42be02748e179f26af66b373",
+            "a.scalar": "a5f09df5197708b7b3a796c7c8cacfaf42d865024b48dd668284aa9766a8adea"
           }
         },
         "sha256": {
@@ -269,6 +308,17 @@
             "blob.two": "1965e71da740b546efcd8ca12f5d78bebce590a129d7a43fd0e9522f6d714c295a45845bbde131d50d8be2c78263d95823ca3ae316a58e8392908a00e0d41ccf"
           }
         },
+        "blake3": {
+          "chunk_roots": {
+            "blob.one": "062060c846377657e7daf451ac27fe6d6ea68b1a1f3ad4f3581cba1193e0913e",
+            "blob.two": "fb0235fe9c617b8388d735479a80a080d4b90cdd7cb99a42782e18de7697f6fd"
+          },
+          "model_root": "2c2b09cb51af8893b26e8316631fb904b5a044b567e6c5912aeabeaf7993488e",
+          "tensor_roots": {
+            "blob.one": "3873296b4dc5a114d0ef03f31c9fd9279d82d1187398c3f5f72e39b147909a68",
+            "blob.two": "3c097c28187cb69dc64e88fb19271ae58457522a70316da5a8d1d2c33fb508da"
+          }
+        },
         "sha256": {
           "chunk_roots": {
             "blob.one": "dd9da66695f009d140de897156f2a85824ed5be2707d120d3f372c24fad8f048",
@@ -333,6 +383,19 @@
             "Z.weight": "78501cafb02ed534906732881bcee080bd52117bb2a75de0f275e8b69d0a5980b82e360a44e3297f2fda5b05ca0096d41b9cf084ae0ed5159a8f64a2230d6f77",
             "z.weight": "475f89b848b2317d36570a1fc9825a446a9f9e93bc6c883e6b86dfdbd399a0a8e2784fc0dc4b4d642d49750824d8b56600461b2511f91eea0bbb277b5975e4af",
             "\u00e9.weight": "80618b0566d8d7548d1bf5175eb93fa6c6b08068a72a7ef3b4f89c8ecbdbe5316f80204e878df4947be9277c14628d066e1c6d435774d0cfb6817c9705bb2094"
+          }
+        },
+        "blake3": {
+          "chunk_roots": {
+            "Z.weight": "9109d8fdf7076a82b24a18ed274175c96007e5a22380869b5326f96c3ba44de9",
+            "z.weight": "4951d67c3c2a32a076625b5fe42c70ff2c6445eef927c9eac6b7ca049db9b2bc",
+            "\u00e9.weight": "dfd75b5cc5539eea2adedacfce208ec1554866d5f0af6b0e7487a6932f06992c"
+          },
+          "model_root": "30a5ae2838db08f8c3caca48a4079a43b54debd867f3bad54c24a16c6a85fc45",
+          "tensor_roots": {
+            "Z.weight": "1fe76841b8f95f8073c2ee84309cf4e9124240293598865b36c51c732d2d8a82",
+            "z.weight": "f29ee33ae218739f8a2dc2fe5f6a8b35150593d5f59312d6af4894106349203a",
+            "\u00e9.weight": "e3890cb7fa2cba7702ab67504820aa9aeb19acf7275f91b7e45cd6df3326ef84"
           }
         },
         "sha256": {
@@ -413,6 +476,15 @@
           "model_root": "df52a3182926e7fcd7ac2446a608788b317630f6f2af57bfcdad0d4c802c49357f66a52187c0570313fd1b00f4c55c86361169d2895233dddacedb02b6c86221",
           "tensor_roots": {
             "x.w": "8e6a75456f9e5924361135cef599361c1219fe52476bd1a64f6f2037faacd48a2a55c80f284428ff9bda6b13366d15641f5b2be99d9103230357631092728fc8"
+          }
+        },
+        "blake3": {
+          "chunk_roots": {
+            "x.w": "799d9a517dc32c00db8039372bfc2b0b6e946ae429f39fbe8e4204d2f9d53dd4"
+          },
+          "model_root": "5bc32d3b5f53db1fbc635d1f183c784b71de46075046a8948daf41daf15077a7",
+          "tensor_roots": {
+            "x.w": "d4b5c45f8973b0a8bbc0c02d8491a097c120e3f585b711783f55bb27a8417d61"
           }
         },
         "sha256": {

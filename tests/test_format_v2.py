@@ -31,7 +31,8 @@ from . import reference_v2 as ref
 from .helpers import SAMPLE, flip_last_byte, write_safetensors
 
 VECTORS = json.loads((Path(__file__).parent / "vectors" / "format_v2.json").read_text())
-ALGORITHMS = ["sha256", "sha512", "sha3_256", "blake2b"]
+ALGORITHMS = list(ref.ALL_ALGORITHMS)
+AVAILABLE = ref.available_algorithms()
 
 
 def case_inputs(case):
@@ -52,15 +53,25 @@ def run_cli(*args):
 # Agreement with the reference implementation
 # ---------------------------------------------------------------------------
 
+def _restrict(vectors, algorithms):
+    out = json.loads(json.dumps(vectors))
+    for case in out["cases"]:
+        case["roots"] = {a: r for a, r in case["roots"].items() if a in algorithms}
+    return out
+
+
 def test_vectors_are_current():
     """The committed vectors are exactly what the reference implementation produces."""
-    assert ref.build_vectors() == VECTORS
+    assert set(VECTORS["cases"][0]["roots"]) == set(ALGORITHMS)
+    assert ref.build_vectors(AVAILABLE) == _restrict(VECTORS, AVAILABLE)
 
 
 @pytest.mark.parametrize("case", VECTORS["cases"], ids=lambda c: c["id"])
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 @pytest.mark.parametrize("parallel", [False, True])
 def test_model_roots_match_reference(case, algorithm, parallel):
+    if algorithm not in AVAILABLE:
+        pytest.skip(f"{algorithm} not installed")
     tree = build_model_merkle_tree(case_inputs(case), chunk_size=case["chunk_size"],
                                    parallel=parallel, num_workers=4, algorithm=algorithm)
     expected = case["roots"][algorithm]
@@ -83,14 +94,13 @@ def test_rfc6962_shape_for_many_sizes():
         assert MerkleTree.from_bytes(data, 3).root_hash == ref.chunk_root("sha256", data, 3).hex()
 
 
-def test_blake3_matches_reference():
-    pytest.importorskip("blake3")
-    case = VECTORS["cases"][0]
-    tensors = {n: (ref.pattern(s, k), dt, None if sh is None else tuple(sh))
-               for n, (s, k, dt, sh) in case["tensors"].items()}
-    tree = build_model_merkle_tree(case_inputs(case), chunk_size=case["chunk_size"],
-                                   algorithm="blake3", parallel=False)
-    assert tree.model_root == ref.model_root("blake3", tensors, case["chunk_size"]).hex()
+def test_example_manifest_fixture():
+    """tests/vectors/manifest_v2_example.json is shared with the Rust port."""
+    path = Path(__file__).parent / "vectors" / "manifest_v2_example.json"
+    tree = ModelMerkleTree.from_json(str(path))
+    case = next(c for c in VECTORS["cases"] if c["id"] == "llama-like")
+    assert tree.model_root == case["roots"]["sha256"]["model_root"]
+    assert tree.get_chunk_proof("model.layers.0.self_attn.q_proj.weight", 5).verify()
 
 
 # ---------------------------------------------------------------------------

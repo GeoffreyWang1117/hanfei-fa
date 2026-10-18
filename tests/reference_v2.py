@@ -5,7 +5,7 @@ Written from the specification only, using hashlib and struct; it does not
 import merkle_verify. The library must agree with it on every root, and the
 committed vectors (tests/vectors/format_v2.json) are produced by it.
 
-Regenerate the vectors with:
+Regenerate the vectors (needs the blake3 package for the BLAKE3 entries) with:
     python tests/reference_v2.py > tests/vectors/format_v2.json
 """
 
@@ -116,7 +116,18 @@ CASES = [
 ]
 
 
-def build_vectors(algorithms=("sha256", "sha512", "sha3_256", "blake2b")):
+ALL_ALGORITHMS = ("sha256", "sha512", "sha3_256", "blake2b", "blake3")
+
+
+def available_algorithms():
+    try:
+        import blake3  # noqa: F401
+        return ALL_ALGORITHMS
+    except ImportError:
+        return tuple(a for a in ALL_ALGORITHMS if a != "blake3")
+
+
+def build_vectors(algorithms=ALL_ALGORITHMS):
     out = {
         "spec": "docs/MANIFEST_V2.md",
         "generated_by": "tests/reference_v2.py (independent of merkle_verify)",
