@@ -3,17 +3,14 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hanfei-fa"
+name = "merkle-weight-verify"
 version = "0.2.0"
-description = "法 — ML model weight integrity verification via hierarchical Merkle trees. O(1) root check, O(k log C) layer-aware diff, incremental sync."
+description = "ML model weight verification via hierarchical Merkle trees — O(1) integrity check, layer-aware diff, incremental sync. The missing verification layer for safetensors, PyTorch, and HuggingFace Hub."
 authors = [{name = "Geoffrey Wang", email = "geoffreywang1117@gmail.com"}]
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.8"
-keywords = [
-    "merkle-tree", "integrity", "verification", "model-weights",
-    "hashing", "safetensors", "huggingface", "pytorch", "provenance",
-]
+keywords = ["merkle-tree", "integrity", "verification", "model-weights", "hashing", "provenance"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -21,7 +18,6 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Topic :: Security :: Cryptography",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries",
 ]
 
@@ -36,9 +32,8 @@ huggingface = ["safetensors>=0.4.0", "huggingface_hub>=0.20.0"]
 all = ["blake3>=1.0.0", "safetensors>=0.4.0", "torch>=2.0.0", "huggingface_hub>=0.20.0"]
 
 [project.urls]
-Homepage = "https://github.com/GeoffreyWang1117/hanfei-fa"
-Issues = "https://github.com/GeoffreyWang1117/hanfei-fa/issues"
-Documentation = "https://github.com/GeoffreyWang1117/hanfei-fa#readme"
+Homepage = "https://github.com/GeoffreyWang1117/merkle-weight-verify"
+Issues = "https://github.com/GeoffreyWang1117/merkle-weight-verify/issues"
 
 [tool.setuptools.packages.find]
 include = ["merkle_verify*"]

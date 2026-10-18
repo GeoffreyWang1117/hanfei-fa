@@ -1,5 +1,5 @@
 """
-hanfei-fa: ML model weight integrity verification via hierarchical Merkle trees.
+merkle-weight-verify: Hierarchical Merkle tree for large file integrity verification.
 
 Verify integrity of ML model weights, datasets, or any large binary files
 with O(1) root hash comparison and fine-grained chunk-level diff.
@@ -37,8 +37,8 @@ from merkle_verify.strategies import (
 __version__ = "0.2.0"
 
 # Optional integrations (imported on demand, not at top level)
-# - merkle_verify.safetensors_adapter: pip install hanfei-fa[safetensors]
-# - merkle_verify.pytorch_adapter: pip install hanfei-fa[torch]
+# - merkle_verify.safetensors_adapter: pip install merkle-weight-verify[safetensors]
+# - merkle_verify.pytorch_adapter: pip install merkle-weight-verify[torch]
 
 __all__ = [
     "MerkleTree",

@@ -1,4 +1,4 @@
-"""Shared fixtures for hanfei-fa tests."""
+"""Shared fixtures for merkle-weight-verify tests."""
 
 import pytest
 import os

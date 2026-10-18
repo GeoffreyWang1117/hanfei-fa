@@ -1,5 +1,5 @@
 """
-PyTorch integration for hanfei-fa.
+PyTorch integration for merkle-weight-verify.
 
 Provides merkle_save/merkle_load/verify_checkpoint for PyTorch models
 with integrity verification via hierarchical Merkle trees.
@@ -26,7 +26,7 @@ def _import_torch():
     except ImportError:
         raise ImportError(
             "PyTorch required. "
-            "Install with: pip install hanfei-fa[torch]"
+            "Install with: pip install merkle-weight-verify[torch]"
         )
 
 

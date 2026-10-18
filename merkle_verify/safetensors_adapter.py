@@ -1,5 +1,5 @@
 """
-Safetensors integration for hanfei-fa.
+Safetensors integration for merkle-weight-verify.
 
 Provides sign/verify/diff operations on .safetensors files
 using per-tensor Merkle trees with metadata stored in __metadata__
@@ -28,7 +28,7 @@ def _import_safetensors():
     except ImportError:
         raise ImportError(
             "safetensors package required. "
-            "Install with: pip install hanfei-fa[safetensors]"
+            "Install with: pip install merkle-weight-verify[safetensors]"
         )
 
 

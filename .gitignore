@@ -7,3 +7,19 @@ build/
 *.merkle.json
 .eggs/
 *.egg
+
+# Tooling / local environment
+.claude/
+.venv/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+
+# Internal planning notes (local paths, research plans) - not for the public repo
+IMPROVEMENT_PLAN.md
+DEVELOPMENT_PLAN.md
+COMPETITIVE_ANALYSIS.md
+.internal/

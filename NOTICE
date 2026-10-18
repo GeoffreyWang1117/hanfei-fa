@@ -1,6 +1,7 @@
-hanfei-fa 法
+merkle-weight-verify
 Copyright 2026 Geoffrey Wang
 
-Part of the HanFei (韩非) verifiable AI series:
-  - hanfei-shu 术 — GPU-accelerated MSM for zero-knowledge proofs
-  - hanfei-fa  法 — ML model weight integrity verification (this project)
+Part of the ChainProve verifiable AI inference ecosystem.
+Sibling projects: hanfei-shu (GPU MSM), ChainProve (ZK proofs).
+
+This product includes software developed by Geoffrey Wang.

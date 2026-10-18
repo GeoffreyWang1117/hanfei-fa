@@ -54,7 +54,7 @@ def cmd_sign(args):
                 print(f"  layers: {len(tree.layer_trees)}")
                 print(f"  time: {elapsed:.3f}s")
         except ImportError:
-            print("Error: safetensors not installed. Run: pip install hanfei-fa[safetensors]",
+            print("Error: safetensors not installed. Run: pip install merkle-weight-verify[safetensors]",
                   file=sys.stderr)
             sys.exit(1)
     elif suffix in (".pt", ".pth"):
@@ -71,7 +71,7 @@ def cmd_sign(args):
             if args.verbose:
                 print(f"  time: {elapsed:.3f}s")
         except ImportError:
-            print("Error: torch not installed. Run: pip install hanfei-fa[torch]",
+            print("Error: torch not installed. Run: pip install merkle-weight-verify[torch]",
                   file=sys.stderr)
             sys.exit(1)
     else:
