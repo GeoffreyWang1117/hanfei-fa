@@ -12,6 +12,8 @@ whole model, and a tensor- and chunk-level diff when it does not match.
   tensors and 16 KB chunks that differ, in O(k log C) hash comparisons for k
   changed chunks out of C.
 - **"How much do I need to re-download?"** Estimate incremental-sync size from the diff.
+- **"Prove this one tensor is part of that model."** Inclusion proofs for a
+  single tensor or a single chunk against the model root.
 
 The core library uses only the Python standard library. Safetensors files
 (single-file or sharded) are read by a built-in parser, so they need no extra
@@ -48,7 +50,16 @@ merkle-verify diff base.safetensors finetuned.safetensors
 
 # Hash a model already in the HuggingFace cache (nothing is written to the cache)
 merkle-verify hf-sign Qwen/Qwen2.5-0.5B --revision main -o qwen.merkle.json
+
+# Options: hash algorithm, compact manifests, the 0.2.x format
+merkle-verify --algorithm blake3 sign model.safetensors
+merkle-verify sign --compact model.safetensors      # no per-chunk hashes: small manifest
+merkle-verify --format-version 1 sign model.safetensors
+merkle-verify info model.merkle.json                # format, algorithm, root, counts
 ```
+
+`verify` always uses the format, algorithm and chunk size recorded in the
+manifest. A trusted root can carry its algorithm: `--expected-root sha512:9f2c...`.
 
 Exit codes: `0` verified, `1` verification failed, `2` error (bad input, missing file).
 
@@ -88,17 +99,32 @@ A tensor hashes to its contiguous little-endian bytes, which is exactly what
 safetensors stores, so `build_model_merkle_tree(state_dict)` and
 `sign("model.safetensors")` give the same root for the same weights.
 
-### Low-level trees and proofs
+### Proofs
 
 ```python
-from merkle_verify import MerkleTree, compute_hash, chunk_bytes
+tree = sign("model.safetensors", sidecar=False)
 
-hashes = [compute_hash(c) for c in chunk_bytes(data, chunk_size=16384)]
-tree = MerkleTree(hashes)
+# This tensor (name, dtype, shape, bytes) is committed by the model root
+proof = tree.get_tensor_proof("model.layers.7.mlp.down_proj.weight")
+assert proof.verify()
+
+# These 16 KB are chunk 3 of that tensor, in the model with this root
+proof = tree.get_chunk_proof("model.layers.7.mlp.down_proj.weight", 3)
+assert proof.verify(chunk_data)
+```
+
+A verifier needs only the model root and the proof; no other tensor is revealed.
+
+### Low-level trees
+
+```python
+from merkle_verify import MerkleTree, RawTensor, build_model_merkle_tree
+
+tree = MerkleTree.from_bytes(data, chunk_size=16384)   # hashes leaves with the format's rule
 changed_indices, comparisons = tree.diff_tree(other_tree)
 
-proof = tree.get_proof(chunk_index=42)
-assert proof.verify()
+# Raw buffers with explicit metadata (safetensors dtype codes)
+model = build_model_merkle_tree({"w": RawTensor(raw, "BF16", (4096, 4096))})
 ```
 
 ### Sync estimate
@@ -123,36 +149,35 @@ through a channel the attacker does not control (`expected_root=` /
 `--expected-root`), or sign the manifest, for example with
 [Sigstore model signing](https://github.com/sigstore/model-transparency).
 Verification always re-hashes the weights; a root read from a manifest is
-never trusted on its own.
+never trusted on its own, and a manifest whose stored roots disagree with its
+own contents is rejected.
 
-**Limitations of the current hash format (manifest format v1).** The model root
-commits to the bytes of every tensor, but:
+**What a root commits to (format v2, the default since 0.3).** Every tensor's
+name, dtype, shape and bytes, the chunk size, and the number of tensors. Trees
+are RFC 6962 Merkle trees with domain-separated leaves and nodes, so no chunk
+can pass for an interior node and no tree is the duplicate-padded version of
+another. Layer grouping is only an index for fast diffs and does not affect
+the root. The manifest records the hash algorithm. The byte-level
+specification is [docs/MANIFEST_V2.md](docs/MANIFEST_V2.md).
 
-- leaf and internal nodes are not domain-separated, and a level with an odd
-  number of nodes duplicates its last node, as in Bitcoin's original Merkle
-  tree, so a chunk tree's root does not uniquely determine its number of chunks;
-- tensor names are bound only through their sorted order, and dtype and shape
-  are not bound at all, so reinterpreting a tensor's bytes under another dtype
-  or shape keeps the root unchanged;
-- manifests do not record the hash algorithm.
-
-A versioned manifest format v2 that fixes all of these is planned for 0.3.
-Version 1 manifests will keep verifying.
+**Format v1** (written by 0.2.x) lacks all of this: no domain separation,
+odd levels duplicate their last node, names are bound only through their sort
+order, dtype and shape are not bound, and the algorithm is not recorded.
+v1 manifests still load and verify with the v1 rules, but new manifests should
+use v2.
 
 ## Performance
 
-ResNet18 (11.7M parameters, 60 tensors), single workstation CPU, SHA-256, 16 KB chunks:
+Measured with `scripts/bench.py` on a Ryzen 9 5950X, SHA-256, 16 KB chunks.
+Full table and method: [docs/benchmarks.md](docs/benchmarks.md).
 
-| Operation | Time | Detail |
-|-----------|------|--------|
-| Build tree | 0.034s | All 60 tensors, serial or 4 threads |
-| Compare (1 tensor changed) | 0.1ms | 264 hash comparisons vs 2953 total chunks |
-| `ModelMerkleTree.verify()` | 0.1ms | Recomputes layer and model roots from stored tensor roots; does not re-read weights |
+| Model | Size | Build (v2) | Merged LoRA update: diff | Sync saving |
+|---|---|---|---|---|
+| Qwen/Qwen2.5-0.5B (bf16) | 988 MB | 0.51 s | 1.7 ms, 48 tensors changed | 95.5% |
+| gpt2-medium | 1520 MB | 0.83 s | 9.1 ms, 24 tensors changed | 80.1% |
 
-Larger-model figures (GPT-2 through 70B, and the 50-68% sync savings for
-partial fine-tuning) come from the earlier research prototype this package was
-extracted from. They have not yet been reproduced with this package; a
-benchmark script that regenerates them is planned.
+Updates confined to a few tensors save 80-99% of the transfer; a full
+fine-tune rewrites everything and saves nothing.
 
 ## Tests
 
@@ -163,18 +188,18 @@ python -m pytest tests/
 ```
 
 Tests that need an optional package are skipped when it is missing.
-`tests/vectors/format_v1.json` pins the roots produced by the 0.2.0 release;
-every later version must reproduce them.
+`tests/vectors/format_v1.json` pins the roots produced by the 0.2.0 release.
+`tests/vectors/format_v2.json` is generated by `tests/reference_v2.py`, an
+independent implementation written from the specification; the library must
+match it for every algorithm.
 
 ## Roadmap
 
-- **0.3: manifest format v2.** Domain-separated, length-binding tree hashing;
-  tensor name, dtype and shape bound into each tensor's root; algorithm and
-  format version recorded in the manifest; per-tensor inclusion proofs against
-  the model root; shared test vectors with the Rust port.
-- **0.4: ecosystem.** `hf-check` against published manifests, chunk-level
-  repair from a healthy replica, Sigstore signing guide.
-- Later: property-based tests, typed API, manifest specification document.
+- **0.3: manifest format v2** (this release). See [CHANGELOG.md](CHANGELOG.md).
+- **0.4: ecosystem.** `hf-check` against manifests published with a model,
+  chunk-level repair from a healthy replica, a Sigstore signing guide, and the
+  v2 format in the Rust port.
+- Later: property-based tests, typed API.
 
 ## License
 
