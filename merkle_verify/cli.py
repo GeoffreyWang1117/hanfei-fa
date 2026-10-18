@@ -10,6 +10,8 @@ Usage:
     merkle-verify diff <a> <b>                   Compare two files or two manifests
     merkle-verify info <manifest>                Show info about a .merkle.json manifest
     merkle-verify hf-sign <repo_id>              Hash a HuggingFace model from the local cache
+    merkle-verify hf-check <repo_id>             Verify a cached HuggingFace model
+    merkle-verify repair <file|dir> --from SRC   Re-fetch only the damaged chunks from a good copy
 
 ``sign`` and ``verify`` never modify the weights. A directory is treated as a
 (possibly sharded) safetensors model: model.safetensors.index.json + shards,
@@ -365,6 +367,77 @@ def cmd_hf_sign(args):
     return EXIT_OK
 
 
+def cmd_hf_check(args):
+    """Verify a model in the HuggingFace cache against a published manifest or a trusted root."""
+    from merkle_verify.safetensors_adapter import (
+        SHARDED_MANIFEST_FILENAME, _resolve_hf_snapshot, verify_sharded,
+    )
+
+    snapshot = _resolve_hf_snapshot(args.repo_id, args.revision, args.cache_dir)
+    commit = Path(snapshot).name
+    manifest = args.manifest
+    published = Path(snapshot) / SHARDED_MANIFEST_FILENAME
+    if manifest is None and published.exists():
+        manifest = str(published)
+        print(f"manifest: {SHARDED_MANIFEST_FILENAME} published in {args.repo_id}@{commit[:12]}")
+    if manifest is None and args.expected_root is None:
+        raise CLIError(
+            f"{args.repo_id}@{commit[:12]} publishes no {SHARDED_MANIFEST_FILENAME}; "
+            "pass --manifest or --expected-root"
+        )
+
+    t0 = time.time()
+    is_valid, details = verify_sharded(
+        snapshot, manifest=manifest or str(published), expected_root=args.expected_root)
+    if is_valid:
+        print(f"OK: {args.repo_id}@{commit[:12]}")
+    else:
+        print(f"FAIL: {args.repo_id}@{commit[:12]}")
+        if "error" in details:
+            print(f"  error: {details['error']}")
+        if details.get("changed_params"):
+            print(f"  changed params: {details['changed_params'][:10]}")
+        if manifest is not None and "error" not in details:
+            print(f"  repair: merkle-verify repair {snapshot} --from hf://{args.repo_id}@{commit}"
+                  + ("" if manifest == str(published) else f" --manifest {manifest}"))
+    if args.verbose:
+        print(f"  snapshot: {snapshot}")
+        print(f"  time: {time.time() - t0:.3f}s")
+    return EXIT_OK if is_valid else EXIT_FAIL
+
+
+def cmd_repair(args):
+    """Re-fetch only damaged chunks from a good copy, checking each against the manifest."""
+    from merkle_verify.repair import RepairError, repair
+
+    t0 = time.time()
+    try:
+        report = repair(
+            args.file, args.source, manifest=args.manifest, expected_root=args.expected_root,
+            output=args.output, dry_run=args.dry_run,
+            max_request_bytes=int(args.max_request_mb * 1024 * 1024),
+        )
+    except RepairError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return EXIT_FAIL
+    print(report.summary())
+    if args.verbose:
+        for name, idx in report.bad_chunks[:20]:
+            print(f"  {name} chunk {idx if idx >= 0 else '(whole tensor)'}")
+        if len(report.bad_chunks) > 20:
+            print(f"  ... {len(report.bad_chunks) - 20} more")
+        print(f"  time: {time.time() - t0:.3f}s")
+    if args.dry_run:
+        print("dry run: nothing was written")
+        return EXIT_OK
+    target = args.output or args.file
+    if report.verified:
+        print(f"OK: {target}")
+        return EXIT_OK
+    print(f"FAIL: {target} does not reproduce the manifest root after repair")
+    return EXIT_FAIL
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="merkle-verify",
@@ -414,6 +487,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_hf.add_argument("--revision", help="Commit hash, branch or tag (default: main)")
     p_hf.add_argument("--cache-dir", help="HF hub cache directory")
     p_hf.add_argument("--output", "-o", help="Write the manifest to this path")
+    p_hfc = sub.add_parser("hf-check", help="Verify a cached HuggingFace model")
+    p_hfc.add_argument("repo_id", help="HF repo ID (e.g. Qwen/Qwen2.5-0.5B)")
+    p_hfc.add_argument("--revision", help="Commit hash, branch or tag (default: main)")
+    p_hfc.add_argument("--cache-dir", help="HF hub cache directory")
+    p_hfc.add_argument("--manifest", help="Trusted manifest (default: model.merkle.json published in the repo)")
+    p_hfc.add_argument("--expected-root", help="Trusted root to verify against")
+
+    p_rep = sub.add_parser("repair", help="Re-fetch only damaged chunks from a good copy")
+    p_rep.add_argument("file", help="Damaged file or model directory")
+    p_rep.add_argument("--from", dest="source", required=True,
+                       help="Good copy: path, directory, http(s):// URL, or hf://org/name[@revision]")
+    p_rep.add_argument("--manifest", help="Trusted manifest (default: the sidecar)")
+    p_rep.add_argument("--expected-root", help="Refuse a manifest whose root differs from this")
+    p_rep.add_argument("--output", "-o", help="Write the repaired copy here (files only)")
+    p_rep.add_argument("--dry-run", action="store_true", help="Only report what would be fetched")
+    p_rep.add_argument("--max-request-mb", type=float, default=8.0,
+                       help="Largest merged range request (default: 8)")
     return parser
 
 
@@ -424,6 +514,8 @@ COMMANDS = {
     "diff": cmd_diff,
     "info": cmd_info,
     "hf-sign": cmd_hf_sign,
+    "hf-check": cmd_hf_check,
+    "repair": cmd_repair,
 }
 
 
