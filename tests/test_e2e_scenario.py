@@ -30,8 +30,8 @@ import sys
 import time
 
 import pytest
-import numpy as np
 
+np = pytest.importorskip("numpy", reason="numpy required for e2e scenario")
 torch = pytest.importorskip("torch", reason="PyTorch required for e2e scenario")
 safetensors_lib = pytest.importorskip("safetensors", reason="safetensors required for e2e scenario")
 blake3_lib = pytest.importorskip("blake3", reason="blake3 required for e2e scenario")

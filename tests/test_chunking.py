@@ -1,7 +1,8 @@
 """Tests for merkle_verify.chunking module."""
 
+import os
+
 import pytest
-import numpy as np
 
 from merkle_verify.chunking import (
     chunk_bytes,
@@ -54,7 +55,7 @@ class TestChunkBytesIter:
 
 class TestChunkTensor:
     def test_same_as_chunk_bytes(self):
-        tensor_bytes = np.random.randn(100).astype(np.float32).tobytes()
+        tensor_bytes = os.urandom(400)
         assert chunk_tensor(tensor_bytes, 64) == chunk_bytes(tensor_bytes, 64)
 
 

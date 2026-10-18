@@ -3,8 +3,8 @@
 import os
 import json
 import pytest
-import numpy as np
 
+np = pytest.importorskip("numpy", reason="numpy not installed")
 safetensors = pytest.importorskip("safetensors", reason="safetensors package not installed")
 
 from safetensors.numpy import save_file as np_save_file

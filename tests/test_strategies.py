@@ -1,7 +1,6 @@
 """Tests for merkle_verify.strategies module."""
 
 import pytest
-import numpy as np
 
 from merkle_verify.strategies import (
     FixedChunkStrategy,
