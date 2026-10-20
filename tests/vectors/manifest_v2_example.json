@@ -1,0 +1,118 @@
+{
+  "format": "merkle-weight-verify",
+  "format_version": 2,
+  "algorithm": "sha256",
+  "model_name": "llama-like",
+  "model_root": "3f0f7c51cf5b94d84cc76324acd6602c2990fc02ac72629e92c1fb2977d4691e",
+  "num_tensors": 6,
+  "created_by": "merkle-weight-verify 0.3.0",
+  "tensors": {
+    "lm_head.weight": {
+      "dtype": "U8",
+      "shape": [
+        65
+      ],
+      "num_bytes": 65,
+      "chunk_size": 64,
+      "num_chunks": 2,
+      "chunk_root": "b7605b5eede87eda92ae03219aa6676d2fbd511202fc1c468e87be02581a03c7",
+      "tensor_root": "0d5d15763e0ce026470a402f6fefb005ee33efb1a971349ce7525e1557bcaadc",
+      "chunk_hashes": [
+        "2bb5ed3d1a993e690300700d761e668bb6680fe3143058a521be9bd7d6848fb0",
+        "8f4388bd54af76d42241e925ab25cabc8ab569780c4689f8f441c5ed9d4f278c"
+      ]
+    },
+    "model.embed_tokens.weight": {
+      "dtype": "BF16",
+      "shape": [
+        10,
+        32
+      ],
+      "num_bytes": 640,
+      "chunk_size": 64,
+      "num_chunks": 10,
+      "chunk_root": "12e7248ee2b618129f8e9c55ab27c42657b33086077e7b06aa5de5c6550d31e7",
+      "tensor_root": "779065d6fc6f7901d7a51508818bf7f38f81a3c5630a0082c517e11ff2577514",
+      "chunk_hashes": [
+        "edb6cbc40e583af7a5da07ea937345dabdca3a453ef494e55ed56852c45922f5",
+        "7c4f03fa2a84f71c080bd4785025ebfe83996d457b4dacd8d7eca83a38cafcfc",
+        "d7b08e9ac5d272bfe86bd0c16c033defd3cc6bacadd05622f63bdcb0b0286c4f",
+        "0e0b485fde9db309ff8696c0bd0fe9dbd1bade9f436cfa181443d5c7a9255c82",
+        "edb6cbc40e583af7a5da07ea937345dabdca3a453ef494e55ed56852c45922f5",
+        "7c4f03fa2a84f71c080bd4785025ebfe83996d457b4dacd8d7eca83a38cafcfc",
+        "d7b08e9ac5d272bfe86bd0c16c033defd3cc6bacadd05622f63bdcb0b0286c4f",
+        "0e0b485fde9db309ff8696c0bd0fe9dbd1bade9f436cfa181443d5c7a9255c82",
+        "edb6cbc40e583af7a5da07ea937345dabdca3a453ef494e55ed56852c45922f5",
+        "7c4f03fa2a84f71c080bd4785025ebfe83996d457b4dacd8d7eca83a38cafcfc"
+      ]
+    },
+    "model.layers.0.input_layernorm.weight": {
+      "dtype": "BF16",
+      "shape": [
+        16
+      ],
+      "num_bytes": 32,
+      "chunk_size": 64,
+      "num_chunks": 1,
+      "chunk_root": "d350229e8f6ac2076e861ae6413821c686106a011eb0912d815972276efa6d3f",
+      "tensor_root": "f53a984b1c8341c47cb2b1f53617d584a43ed2f05bf1d5e6bf4ac98de7995779",
+      "chunk_hashes": [
+        "d350229e8f6ac2076e861ae6413821c686106a011eb0912d815972276efa6d3f"
+      ]
+    },
+    "model.layers.0.self_attn.q_proj.weight": {
+      "dtype": "BF16",
+      "shape": [
+        16,
+        16
+      ],
+      "num_bytes": 512,
+      "chunk_size": 64,
+      "num_chunks": 8,
+      "chunk_root": "d703be597ee3f46d937f46949ac8789835765d8235b49aa6a916549c2786a846",
+      "tensor_root": "424da012431c629e48c5c3f1465d89c859b553e92d72b7dc19eacb99ccadf3c7",
+      "chunk_hashes": [
+        "0372b292c3d4347798e0350ba259d46045560be5eeb7a5c148f9e86c85d91db9",
+        "4cc5c82574f5d718532418341abdaec88ef5a5933ef11424cef0baa30c570b40",
+        "c63cbdca926d8d9b99942ec8cace30e4e566a4059172b678379448d87960115b",
+        "c824f177ce884219e237fc26ccde8529c9e10808e5c57d34329aa024b2db4b1b",
+        "0372b292c3d4347798e0350ba259d46045560be5eeb7a5c148f9e86c85d91db9",
+        "4cc5c82574f5d718532418341abdaec88ef5a5933ef11424cef0baa30c570b40",
+        "c63cbdca926d8d9b99942ec8cace30e4e566a4059172b678379448d87960115b",
+        "c824f177ce884219e237fc26ccde8529c9e10808e5c57d34329aa024b2db4b1b"
+      ]
+    },
+    "model.layers.1.mlp.down_proj.weight": {
+      "dtype": "F32",
+      "shape": [
+        5,
+        10
+      ],
+      "num_bytes": 200,
+      "chunk_size": 64,
+      "num_chunks": 4,
+      "chunk_root": "5e490f6420dc3d5fcf336e4486a73b14756de7d48a4f60462b8b8e2f457a8e2f",
+      "tensor_root": "ff1d0b54773baf37e06295a699e51c75199efc410777238de24166073b459c67",
+      "chunk_hashes": [
+        "91af695d58b2fb01204092037110edf7ca4e371843ab8412f4988ec3fb47b823",
+        "125868e3a4d1358bff385342423ed658aa89c26e03e8d4d260f56c2a481ef25b",
+        "8a682c42e8d826a12c425441dd1df77c1ce5091f545594c9d830ef8d01b50b3c",
+        "e4db1d87a3464c59af66243d78cca1b87ff8cbd74fdb42ca606b01b74a8135a8"
+      ]
+    },
+    "model.norm.weight": {
+      "dtype": "F32",
+      "shape": [
+        16
+      ],
+      "num_bytes": 64,
+      "chunk_size": 64,
+      "num_chunks": 1,
+      "chunk_root": "54f5336107388202c6e49c6cbe1f1e59ecfcb9ab75ac1b9bb092463ba1bb352a",
+      "tensor_root": "d119b4d7cad941e0178fb71f2824c3d5f5036d1fc0bc4d69f58d9eac758101e2",
+      "chunk_hashes": [
+        "54f5336107388202c6e49c6cbe1f1e59ecfcb9ab75ac1b9bb092463ba1bb352a"
+      ]
+    }
+  }
+}

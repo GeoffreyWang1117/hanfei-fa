@@ -29,6 +29,15 @@ from merkle_verify.comparison import (
     check_roots,
     ComparisonResult,
 )
+from merkle_verify._tensor_bytes import RawTensor
+from merkle_verify.format import (
+    DEFAULT_FORMAT_VERSION,
+    FORMAT_V1,
+    FORMAT_V2,
+    hash_leaf,
+    hash_node,
+)
+from merkle_verify.merkle_tree import ChunkProof, MerkleProof, TensorProof
 from merkle_verify.strategies import (
     ChunkStrategy,
     FixedChunkStrategy,
@@ -36,13 +45,14 @@ from merkle_verify.strategies import (
     TheoreticalOptimalStrategy,
 )
 
-__version__ = "0.2.1"
+__version__ = "0.3.0.dev0"
 
 # Integrations (imported on demand, not at top level)
 # - merkle_verify.safetensors_adapter: no extra dependency (built-in format reader)
 # - merkle_verify.pytorch_adapter: pip install merkle-weight-verify[torch]
 
 __all__ = [
+    "build_model_merkle_tree",
     "MerkleTree",
     "LayerMerkleTree",
     "ModelMerkleTree",
@@ -65,4 +75,13 @@ __all__ = [
     "build_file_merkle_tree",
     "assemble_model_tree",
     "check_roots",
+    "RawTensor",
+    "DEFAULT_FORMAT_VERSION",
+    "FORMAT_V1",
+    "FORMAT_V2",
+    "hash_leaf",
+    "hash_node",
+    "MerkleProof",
+    "TensorProof",
+    "ChunkProof",
 ]

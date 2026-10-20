@@ -4,6 +4,46 @@ All notable changes to this project are documented here. Versions follow
 [semantic versioning](https://semver.org/); while the major version is 0, a
 minor version may change the manifest format.
 
+## [0.3.0] - unreleased
+
+Manifest format v2 becomes the default. Roots change for newly signed
+models; v1 manifests written by 0.2.x keep verifying with the v1 rules.
+Specification: `docs/MANIFEST_V2.md`.
+
+### Changed
+
+- New trees use format v2: RFC 6962 trees with domain-separated leaves
+  (`0x00`) and nodes (`0x01`) over raw digests; an odd node is carried up
+  instead of being paired with itself.
+- Each tensor root binds the tensor's name, dtype, shape, byte length and
+  chunk size. The model root is a Merkle tree over tensor roots sorted by
+  name, wrapped with the tensor count. Layer grouping no longer enters the
+  root; layer digests remain as a diff index.
+- Manifests record `format`, `format_version`, `algorithm`, `num_tensors` and
+  `created_by`. Every tree remembers its algorithm, so changing the process
+  default no longer breaks proofs or verification.
+- Loading a v2 manifest re-derives every chunk root, tensor root and the model
+  root and rejects the manifest if any stored value disagrees.
+- Diffing trees of different formats, algorithms or chunk sizes is an error
+  instead of reporting everything as changed.
+- `MerkleTree.from_file` on an empty file yields one empty chunk in v2.
+
+### Added
+
+- Inclusion proofs against the model root: `ModelMerkleTree.get_tensor_proof()`
+  and `get_chunk_proof()`, verified with the RFC 9162 algorithm.
+- Compact manifests without per-chunk hashes (`include_chunks=False`,
+  `merkle-verify sign --compact`).
+- `RawTensor(data, dtype, shape)` input for raw buffers, `MerkleTree.from_bytes()`,
+  `hash_leaf()` / `hash_node()`, and `format_version=` / `algorithm=` keyword
+  arguments on every builder; CLI `--format-version`, `--algorithm`.
+- Expected roots may carry their algorithm: `"sha512:<hex>"`.
+- `ModelMerkleTree.total_params` is exact when shapes are known.
+- `scripts/bench.py` and `docs/benchmarks.md`: build, diff and sync
+  measurements on real models.
+- `tests/reference_v2.py`: an independent implementation of the specification
+  that generates `tests/vectors/format_v2.json`.
+
 ## [0.2.1] - 2026-10-18
 
 Every root produced by 0.2.0 is reproduced exactly (pinned by

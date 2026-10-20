@@ -9,6 +9,9 @@ instead of linear scanning all chunks.
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 
+from merkle_verify.chunking import DEFAULT_CHUNK_SIZE
+from merkle_verify.format import DEFAULT_FORMAT_VERSION, check_format_version, parse_root
+from merkle_verify.hasher import HashAlgorithm, resolve_algorithm
 from merkle_verify.merkle_tree import ModelMerkleTree
 
 
@@ -59,6 +62,18 @@ class ComparisonResult:
         )
 
 
+def _check_same_format(tree_a: ModelMerkleTree, tree_b: ModelMerkleTree) -> None:
+    if not tree_a.layer_trees or not tree_b.layer_trees:
+        return
+    fa = (tree_a.format_version, tree_a.algorithm)
+    fb = (tree_b.format_version, tree_b.algorithm)
+    if fa != fb:
+        raise ValueError(
+            f"cannot compare a v{fa[0]}/{fa[1].value} tree with a v{fb[0]}/{fb[1].value} tree; "
+            "rebuild both with the same format and algorithm"
+        )
+
+
 def compare_model_trees(
     tree_a: ModelMerkleTree,
     tree_b: ModelMerkleTree,
@@ -93,6 +108,7 @@ def compare_model_trees(
         >>> diff = compare_model_trees(tree1, tree2)
         >>> print(f"Changed: {diff['change_percentage']:.2f}%")
     """
+    _check_same_format(tree_a, tree_b)
     result = ComparisonResult()
     hash_comparisons = 0
 
@@ -155,8 +171,9 @@ def compare_model_trees(
                 continue
 
             # --- Param-level pruning ---
+            # (v2: the tensor root also binds name, dtype and shape)
             hash_comparisons += 1
-            if param_a.root_hash == param_b.root_hash:
+            if param_a.tensor_root(param_name) == param_b.tensor_root(param_name):
                 result.unchanged_params.append(param_name)
                 continue
 
@@ -237,6 +254,78 @@ def estimate_sync_savings(
     }
 
 
+@dataclass
+class RehashPlan:
+    """How to re-hash weights for verification, and whether the manifest can be compared."""
+    format_version: int
+    algorithm: HashAlgorithm
+    chunk_size: int
+    stored: Optional[ModelMerkleTree]
+    note: Optional[str] = None
+
+
+def _manifest_chunk_size(tree: ModelMerkleTree) -> Optional[int]:
+    for layer_tree in tree.layer_trees.values():
+        for param_tree in layer_tree.param_trees.values():
+            return param_tree.chunk_size
+    return None
+
+
+def plan_rehash(
+    stored_tree: Optional[ModelMerkleTree],
+    expected_root: Optional[str] = None,
+    format_version: Optional[int] = None,
+    algorithm=None,
+    chunk_size: Optional[int] = None,
+) -> RehashPlan:
+    """
+    Decide the format, algorithm and chunk size to re-hash the weights with.
+
+    * Against a manifest (no ``expected_root``): everything comes from the
+      manifest, since any other choice could never reproduce its root. An
+      explicit argument that disagrees is an error.
+    * Against a trusted ``expected_root``: explicit arguments win, then the
+      root's ``"algorithm:"`` prefix, then the manifest, then the defaults.
+      A manifest hashed differently is not used to localise changes.
+    """
+    if format_version is not None:
+        check_format_version(format_version)
+    alg_arg = resolve_algorithm(algorithm) if algorithm is not None else None
+    have = None
+    if stored_tree is not None and stored_tree.layer_trees:
+        have = (stored_tree.format_version, stored_tree.algorithm, _manifest_chunk_size(stored_tree))
+
+    if expected_root is None:
+        if have is None:
+            raise ValueError("need a manifest or an expected_root to verify against")
+        for label, given, value in (("format_version", format_version, have[0]),
+                                    ("algorithm", alg_arg, have[1]),
+                                    ("chunk_size", chunk_size, have[2])):
+            if given is not None and given != value:
+                shown = (lambda v: v.value if isinstance(v, HashAlgorithm) else v)
+                raise ValueError(
+                    f"{label} {shown(given)} differs from the manifest's {label} {shown(value)}"
+                )
+        return RehashPlan(have[0], have[1], have[2], stored_tree)
+
+    prefix_alg = parse_root(expected_root)[0]
+    prefix_alg = resolve_algorithm(prefix_alg) if prefix_alg else None
+    if alg_arg is not None and prefix_alg is not None and alg_arg != prefix_alg:
+        raise ValueError(
+            f"algorithm {alg_arg.value} conflicts with the expected root's prefix {prefix_alg.value}"
+        )
+    version = format_version or (have[0] if have else DEFAULT_FORMAT_VERSION)
+    alg = alg_arg or prefix_alg or (have[1] if have else resolve_algorithm(None))
+    cs = chunk_size or (have[2] if have else DEFAULT_CHUNK_SIZE)
+    if have is None:
+        return RehashPlan(version, alg, cs, None)
+    if have == (version, alg, cs):
+        return RehashPlan(version, alg, cs, stored_tree)
+    return RehashPlan(version, alg, cs, None,
+                      note="manifest uses a different format, algorithm or chunk size; "
+                           "it was not used to localise changes")
+
+
 def check_roots(
     current_tree: ModelMerkleTree,
     stored_tree: Optional[ModelMerkleTree] = None,
@@ -265,12 +354,12 @@ def check_roots(
 
     details: Dict[str, Any] = {"computed_root": current_tree.model_root}
     if expected_root is not None:
-        is_valid = current_tree.model_root == expected_root
+        is_valid = current_tree.model_root == parse_root(expected_root)[1]
         details["mode"] = "expected_root"
         details["expected_root"] = expected_root
         if stored_tree is not None:
             details["stored_root"] = stored_tree.model_root
-            if stored_tree.model_root != expected_root:
+            if stored_tree.model_root != parse_root(expected_root)[1]:
                 details["manifest_mismatch"] = True
     else:
         is_valid = current_tree.model_root == stored_tree.model_root

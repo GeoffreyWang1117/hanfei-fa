@@ -82,7 +82,9 @@ class TestSign:
         with open(sidecar) as f:
             data = json.load(f)
         assert "model_root" in data
-        assert "layer_trees" in data
+        assert data["format_version"] == 2
+        assert set(data["tensors"]) == {"layer.0.weight", "layer.0.bias",
+                                        "layer.1.weight", "layer.1.bias"}
 
 
 class TestVerify:

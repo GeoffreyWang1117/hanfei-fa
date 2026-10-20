@@ -77,6 +77,32 @@ def _get_hasher(algorithm: HashAlgorithm) -> Callable:
     return hashers[algorithm]
 
 
+def hasher_factory(algorithm: Optional[Union[HashAlgorithm, str]] = None) -> Callable:
+    """Zero-argument constructor of a hashlib-style hasher for ``algorithm``."""
+    return _get_hasher(resolve_algorithm(algorithm))
+
+
+def resolve_algorithm(
+    algorithm: Optional[Union[HashAlgorithm, str]] = None
+) -> HashAlgorithm:
+    """Turn ``None`` (current default), a name, or an enum member into a HashAlgorithm."""
+    if algorithm is None:
+        return _default_algorithm
+    if isinstance(algorithm, HashAlgorithm):
+        return algorithm
+    return HashAlgorithm(algorithm.lower())
+
+
+def compute_digest(
+    data: bytes,
+    algorithm: Optional[Union[HashAlgorithm, str]] = None
+) -> bytes:
+    """Hash ``data`` and return the raw digest bytes (not hex)."""
+    hasher = _get_hasher(resolve_algorithm(algorithm))()
+    hasher.update(data)
+    return hasher.digest()
+
+
 def compute_hash(
     data: Union[bytes, str],
     algorithm: Optional[Union[HashAlgorithm, str]] = None

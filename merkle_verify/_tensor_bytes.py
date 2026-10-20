@@ -17,7 +17,7 @@ the same parameter roots.
 """
 
 import sys
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 #: (dtype code, shape) using safetensors dtype codes, e.g. ("BF16", (4096, 4096)).
 TensorMeta = Tuple[str, Tuple[int, ...]]
@@ -64,6 +64,17 @@ _NUMPY_DTYPE_CODES = {
 _BYTES_TYPES = (bytes, bytearray, memoryview)
 
 
+class RawTensor(NamedTuple):
+    """Raw tensor bytes with their dtype and shape, for callers that have no tensor object.
+
+    ``data`` must already be in C order and little-endian; ``dtype`` is a
+    safetensors dtype code such as ``"BF16"``.
+    """
+    data: bytes
+    dtype: str
+    shape: Sequence[int]
+
+
 def _is_torch_tensor(value: Any) -> bool:
     return (
         type(value).__module__.split(".")[0] == "torch"
@@ -82,7 +93,8 @@ def _is_numpy_array(value: Any) -> bool:
 
 def is_tensor_like(value: Any) -> bool:
     """True if :func:`to_bytes` can convert ``value``."""
-    return isinstance(value, _BYTES_TYPES) or _is_torch_tensor(value) or _is_numpy_array(value)
+    return (isinstance(value, (RawTensor,) + _BYTES_TYPES)
+            or _is_torch_tensor(value) or _is_numpy_array(value))
 
 
 def _torch_to_bytes(value: Any) -> Tuple[bytes, TensorMeta]:
@@ -133,6 +145,8 @@ def to_bytes_and_meta(value: Any) -> Tuple[bytes, Optional[TensorMeta]]:
 
     ``meta`` is ``None`` for plain byte strings.
     """
+    if isinstance(value, RawTensor):
+        return bytes(value.data), (str(value.dtype), tuple(int(d) for d in value.shape))
     if isinstance(value, bytes):
         return value, None
     if isinstance(value, (bytearray, memoryview)):

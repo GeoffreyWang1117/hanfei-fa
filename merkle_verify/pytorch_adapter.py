@@ -18,12 +18,12 @@ from typing import Any, Dict, Optional, Tuple
 
 from merkle_verify._tensor_bytes import flatten_state_dict, to_bytes
 from merkle_verify.chunking import DEFAULT_CHUNK_SIZE
-from merkle_verify.comparison import check_roots, compare_model_trees
+from merkle_verify.comparison import check_roots, compare_model_trees, plan_rehash
+from merkle_verify.format import DEFAULT_FORMAT_VERSION
 from merkle_verify.merkle_tree import (
     ModelMerkleTree,
     build_model_merkle_tree,
 )
-from merkle_verify.safetensors_adapter import _infer_chunk_size, _resolve_chunk_size
 
 
 def _import_torch():
@@ -60,18 +60,30 @@ def _tree_for(
     chunk_size: int,
     model_name: str,
     parallel: bool,
+    format_version: int = DEFAULT_FORMAT_VERSION,
+    algorithm=None,
 ) -> ModelMerkleTree:
     flat = flatten_state_dict(state_dict)
     if not flat:
         raise ValueError("checkpoint contains no tensors")
     return build_model_merkle_tree(
         flat, chunk_size=chunk_size, model_name=model_name, parallel=parallel,
+        format_version=format_version, algorithm=algorithm,
     )
 
 
 def _load(filepath: str, map_location: Any, weights_only: bool) -> Dict:
     torch = _import_torch()
     return torch.load(filepath, map_location=map_location, weights_only=weights_only)
+
+
+def _load_manifest(manifest: str) -> Tuple[Optional[ModelMerkleTree], Optional[str]]:
+    try:
+        return ModelMerkleTree.from_json(manifest), None
+    except FileNotFoundError:
+        return None, None
+    except (ValueError, KeyError, TypeError) as e:
+        return None, f"invalid manifest {manifest}: {e}"
 
 
 def sign_checkpoint(
@@ -82,6 +94,10 @@ def sign_checkpoint(
     map_location: Any = "cpu",
     weights_only: bool = True,
     sidecar: bool = True,
+    *,
+    format_version: int = DEFAULT_FORMAT_VERSION,
+    algorithm=None,
+    include_chunks: bool = True,
 ) -> ModelMerkleTree:
     """
     Build a Merkle manifest for an existing checkpoint without modifying it.
@@ -94,6 +110,9 @@ def sign_checkpoint(
         map_location: torch.load map_location (default: "cpu")
         weights_only: torch.load weights_only (default: True)
         sidecar: Write ``<file>.merkle.json`` next to the checkpoint
+        format_version: Manifest format, 2 (default) or 1
+        algorithm: Hash algorithm (default: SHA-256)
+        include_chunks: False writes a compact v2 manifest without chunk hashes
 
     Returns:
         The constructed ModelMerkleTree
@@ -101,9 +120,9 @@ def sign_checkpoint(
     state_dict = _load(filepath, map_location, weights_only)
     if model_name is None:
         model_name = Path(filepath).stem
-    tree = _tree_for(state_dict, chunk_size, model_name, parallel)
+    tree = _tree_for(state_dict, chunk_size, model_name, parallel, format_version, algorithm)
     if sidecar:
-        tree.to_json(_sidecar_path(filepath))
+        tree.to_json(_sidecar_path(filepath), include_chunks=include_chunks)
     return tree
 
 
@@ -113,6 +132,9 @@ def merkle_save(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     model_name: Optional[str] = None,
     parallel: bool = True,
+    *,
+    format_version: int = DEFAULT_FORMAT_VERSION,
+    algorithm=None,
     **torch_save_kwargs,
 ) -> ModelMerkleTree:
     """
@@ -127,6 +149,8 @@ def merkle_save(
         chunk_size: Chunk size for Merkle tree
         model_name: Model name (default: filename stem)
         parallel: Use parallel hashing
+        format_version: Manifest format, 2 (default) or 1
+        algorithm: Hash algorithm (default: SHA-256)
         **torch_save_kwargs: Extra args forwarded to torch.save
 
     Returns:
@@ -138,16 +162,42 @@ def merkle_save(
 
     if model_name is None:
         model_name = Path(filepath).stem
-    tree = _tree_for(state_dict, chunk_size, model_name, parallel)
+    tree = _tree_for(state_dict, chunk_size, model_name, parallel, format_version, algorithm)
     tree.to_json(_sidecar_path(filepath))
     return tree
 
 
-def _load_manifest(manifest: str) -> Optional[ModelMerkleTree]:
-    try:
-        return ModelMerkleTree.from_json(manifest)
-    except FileNotFoundError:
-        return None
+def _verify_state_dict(
+    state_dict: Dict,
+    stored_tree: Optional[ModelMerkleTree],
+    manifest_error: Optional[str],
+    expected_root: Optional[str],
+    chunk_size: Optional[int],
+    format_version: Optional[int],
+    algorithm,
+    parallel: bool,
+    default_name: str,
+) -> Tuple[bool, Dict[str, Any]]:
+    plan = plan_rehash(stored_tree, expected_root, format_version, algorithm, chunk_size)
+    name = stored_tree.model_name if stored_tree else default_name
+    current_tree = _tree_for(state_dict, plan.chunk_size, name, parallel,
+                             plan.format_version, plan.algorithm)
+    is_valid, details = check_roots(current_tree, plan.stored, expected_root)
+    details["format_version"] = plan.format_version
+    details["algorithm"] = plan.algorithm.value
+    if plan.note:
+        details["manifest_ignored"] = plan.note
+    if manifest_error is not None:
+        details["manifest_ignored"] = manifest_error
+    return is_valid, details
+
+
+def _manifest_or_error(manifest: str, expected_root: Optional[str]):
+    """Load the manifest; returns (tree, error, fatal_details)."""
+    stored_tree, error = _load_manifest(manifest)
+    if expected_root is None and (stored_tree is None or error is not None):
+        return None, error, {"error": error or f"Manifest not found: {manifest}"}
+    return stored_tree, error, None
 
 
 def merkle_load(
@@ -179,17 +229,13 @@ def merkle_load(
     if not verify:
         return state_dict, None
 
-    stored_tree = _load_manifest(manifest or _sidecar_path(filepath))
-    if stored_tree is None and expected_root is None:
-        return state_dict, {
-            "verified": False,
-            "error": f"Manifest not found: {manifest or _sidecar_path(filepath)}",
-        }
-
-    chunk_size = _infer_chunk_size(stored_tree) if stored_tree else DEFAULT_CHUNK_SIZE
-    name = stored_tree.model_name if stored_tree else Path(filepath).stem
-    current_tree = _tree_for(state_dict, chunk_size, name, parallel)
-    is_valid, details = check_roots(current_tree, stored_tree, expected_root)
+    stored_tree, error, fatal = _manifest_or_error(manifest or _sidecar_path(filepath), expected_root)
+    if fatal is not None:
+        return state_dict, {"verified": False, **fatal}
+    is_valid, details = _verify_state_dict(
+        state_dict, stored_tree, error, expected_root, None, None, None,
+        parallel, Path(filepath).stem,
+    )
     details["verified"] = is_valid
     return state_dict, details
 
@@ -202,6 +248,9 @@ def verify_checkpoint(
     weights_only: bool = True,
     parallel: bool = True,
     chunk_size: Optional[int] = None,
+    *,
+    format_version: Optional[int] = None,
+    algorithm=None,
 ) -> Tuple[bool, Dict[str, Any]]:
     """
     Verify a PyTorch checkpoint.
@@ -217,21 +266,20 @@ def verify_checkpoint(
         map_location: torch.load map_location
         weights_only: torch.load weights_only (default: True)
         parallel: Use parallel hashing
-        chunk_size: Chunk size override (default: from manifest, else 16KB)
+        chunk_size: Chunk size (default: from manifest, else 16KB)
+        format_version, algorithm: Only needed with ``expected_root`` and no manifest
 
     Returns:
         Tuple of (is_valid, details_dict)
     """
-    manifest = manifest or _sidecar_path(filepath)
-    stored_tree = _load_manifest(manifest)
-    if stored_tree is None and expected_root is None:
-        return False, {"error": f"Manifest not found: {manifest}"}
-
-    chunk_size = _resolve_chunk_size(chunk_size, stored_tree, expected_root)
-    name = stored_tree.model_name if stored_tree else Path(filepath).stem
+    stored_tree, error, fatal = _manifest_or_error(manifest or _sidecar_path(filepath), expected_root)
+    if fatal is not None:
+        return False, fatal
     state_dict = _load(filepath, map_location, weights_only)
-    current_tree = _tree_for(state_dict, chunk_size, name, parallel)
-    return check_roots(current_tree, stored_tree, expected_root)
+    return _verify_state_dict(
+        state_dict, stored_tree, error, expected_root, chunk_size, format_version, algorithm,
+        parallel, Path(filepath).stem,
+    )
 
 
 def diff_checkpoints(
@@ -241,6 +289,9 @@ def diff_checkpoints(
     map_location: Any = None,
     weights_only: bool = True,
     parallel: bool = True,
+    *,
+    format_version: int = DEFAULT_FORMAT_VERSION,
+    algorithm=None,
 ) -> Dict[str, Any]:
     """
     Compare two PyTorch checkpoints.
@@ -252,12 +303,13 @@ def diff_checkpoints(
         map_location: torch.load map_location
         weights_only: torch.load weights_only (default: True)
         parallel: Use parallel hashing
+        format_version, algorithm: Hash format used for both trees
 
     Returns:
         Comparison dict with layer/param/chunk-level changes
     """
     sd_a = _load(filepath_a, map_location, weights_only)
     sd_b = _load(filepath_b, map_location, weights_only)
-    tree_a = _tree_for(sd_a, chunk_size, Path(filepath_a).stem, parallel)
-    tree_b = _tree_for(sd_b, chunk_size, Path(filepath_b).stem, parallel)
+    tree_a = _tree_for(sd_a, chunk_size, Path(filepath_a).stem, parallel, format_version, algorithm)
+    tree_b = _tree_for(sd_b, chunk_size, Path(filepath_b).stem, parallel, format_version, algorithm)
     return compare_model_trees(tree_a, tree_b, detailed=True)

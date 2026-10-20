@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "merkle-weight-verify"
-version = "0.2.1"
+version = "0.3.0.dev0"
 description = "Verify ML model weights with hierarchical Merkle trees: one root for the whole model, tensor- and chunk-level diffs, zero-dependency safetensors support."
 authors = [{name = "Geoffrey Wang", email = "geoffreywang1117@gmail.com"}]
 readme = "README.md"
