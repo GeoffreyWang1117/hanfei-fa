@@ -32,11 +32,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
-from merkle_verify import format as fmt
+from merkle_verify._chunk_hashing import hash_file_ranges, leaf_hasher
 from merkle_verify._safetensors_io import TensorInfo, read_header
 from merkle_verify.format import FORMAT_V1, parse_root
-from merkle_verify.hasher import compute_hash
-from merkle_verify.merkle_tree import MerkleTree, ModelMerkleTree, build_file_merkle_tree
+from merkle_verify.merkle_tree import (
+    DEFAULT_NUM_WORKERS, MerkleTree, ModelMerkleTree, build_file_merkle_tree,
+)
 
 DEFAULT_MAX_REQUEST_BYTES = 8 * 1024 * 1024
 DEFAULT_CONCURRENCY = 8
@@ -206,16 +207,13 @@ class _Unit:
     check: Callable[[bytes], bool]
 
 
-def _leaf_fn(tree: MerkleTree) -> Callable[[bytes], str]:
-    alg = tree.algorithm
-    if tree.version == FORMAT_V1:
-        return lambda chunk: compute_hash(chunk, alg)
-    return lambda chunk: fmt.hash_leaf(chunk, alg)
+#: (name, absolute offset, byte length, manifest tree) of one tensor in a file
+_Tensor = Tuple[str, int, int, MerkleTree]
 
 
 def _chunk_units(name: str, offset: int, nbytes: int, tree: MerkleTree) -> List[_Unit]:
     """Per-chunk units (manifest with chunk hashes) or one whole-tensor unit (compact)."""
-    leaf = _leaf_fn(tree)
+    leaf = leaf_hasher(tree.version, tree.algorithm)
     cs = tree.chunk_size
     if tree.chunk_hashes is not None:
         units = []
@@ -231,6 +229,35 @@ def _chunk_units(name: str, offset: int, nbytes: int, tree: MerkleTree) -> List[
         rebuilt = MerkleTree.from_bytes(data, cs, version=t.version, algorithm=t.algorithm)
         return rebuilt.root_hash == t.root_hash
     return [_Unit((name, -1), offset, nbytes, whole)]
+
+
+def _scan(path: str, tensors: List[_Tensor], workers: int) -> List[_Unit]:
+    """Hash the local copy (in parallel) and return the units that do not match.
+
+    Bytes past the end of a truncated file count as damaged.
+    """
+    size = os.path.getsize(path) if os.path.exists(path) else 0
+    groups: Dict[Tuple, List[_Tensor]] = {}
+    for t in tensors:
+        tree = t[3]
+        groups.setdefault((tree.chunk_size, tree.version, tree.algorithm), []).append(t)
+
+    bad: List[_Unit] = []
+    for (chunk_size, version, algorithm), members in groups.items():
+        ranges = [(name, path, offset, max(0, min(nbytes, size - offset)))
+                  for name, offset, nbytes, _ in members]
+        local = hash_file_ranges(ranges, chunk_size, leaf_hasher(version, algorithm), workers)
+        for (name, offset, nbytes, tree), (_, _, _, avail) in zip(members, ranges):
+            units = _chunk_units(name, offset, nbytes, tree)
+            leaves = local[name]
+            if tree.chunk_hashes is not None:
+                for i, u in enumerate(units):
+                    if i >= len(leaves) or leaves[i] != tree.chunk_hashes[i]:
+                        bad.append(u)
+            elif avail < nbytes or MerkleTree(leaves, chunk_size, version=version,
+                                              algorithm=algorithm).root_hash != tree.root_hash:
+                bad.extend(units)
+    return bad
 
 
 def _layout_matches(tensors: Dict[str, TensorInfo], trees: Dict[str, MerkleTree]) -> bool:
@@ -263,20 +290,12 @@ def _source_header(source) -> Tuple[bytes, Dict[str, TensorInfo]]:
     return raw, tensors
 
 
-def _read_local(f, offset: int, length: int) -> bytes:
-    f.seek(offset)
-    return f.read(length)
-
-
-def _repair_units(path: str, units: List[_Unit], source, report: RepairReport,
+def _repair_units(path: str, tensors: List[_Tensor], source, report: RepairReport,
                   dry_run: bool, max_request: int, concurrency: int = DEFAULT_CONCURRENCY) -> None:
     """Find damaged units in ``path``, fetch them, verify, write."""
-    bad: List[_Unit] = []
-    with open(path, "rb") as f:
-        for u in units:
-            report.checked_chunks += 1
-            if not u.check(_read_local(f, u.offset, u.length)):
-                bad.append(u)
+    report.checked_chunks += sum(
+        len(t.chunk_hashes) if t.chunk_hashes is not None else 1 for _, _, _, t in tensors)
+    bad = _scan(path, tensors, DEFAULT_NUM_WORKERS)
     report.bad_chunks.extend(u.label for u in bad)
     if not bad:
         return
@@ -345,10 +364,8 @@ def _repair_safetensors_file(path: str, trees: Dict[str, MerkleTree], source,
     # safetensors buffers have no holes, so the last tensor ends the file
     expected_size = max(i.offset + i.nbytes for i in local.values())
     report.total_bytes += expected_size
-    units: List[_Unit] = []
-    for name, info in local.items():
-        units.extend(_chunk_units(name, info.offset, info.nbytes, trees[name]))
-    _repair_units(path, units, source, report, dry_run, max_request)
+    tensors = [(name, info.offset, info.nbytes, trees[name]) for name, info in local.items()]
+    _repair_units(path, tensors, source, report, dry_run, max_request)
     if not dry_run and os.path.getsize(path) != expected_size:
         with open(path, "r+b") as out:
             out.truncate(expected_size)
@@ -435,8 +452,7 @@ def repair(
         if max(1, -(-nbytes // tree.chunk_size)) != tree.num_chunks:
             raise RepairError("the source's size does not match the manifest's chunk count")
         report.total_bytes = nbytes
-        _repair_units(path, _chunk_units("file", 0, nbytes, tree), src, report, dry_run,
-                      max_request_bytes)
+        _repair_units(path, [("file", 0, nbytes, tree)], src, report, dry_run, max_request_bytes)
         if not dry_run:
             if os.path.getsize(path) != nbytes:
                 with open(path, "r+b") as out:
